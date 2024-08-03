@@ -5,7 +5,7 @@
  * Created		: 14-May-2024
  * Tabsize		: 4
  * 
- * This Revision: $Id: MySoilSensorESP32.cpp 1610 2024-07-06 10:18:53Z  $
+ * This Revision: $Id: MySoilSensorESP32.cpp 1616 2024-07-31 09:22:01Z  $
  */
 
 /*
@@ -83,7 +83,7 @@
 #define MQTT_BROKER "ha-server"
 
 /// version string published at startup.
-const char VERSION[] = "$Id: MySoilSensorESP32.cpp 1610 2024-07-06 10:18:53Z  $";
+const char VERSION[] = "$Id: MySoilSensorESP32.cpp 1616 2024-07-31 09:22:01Z  $";
 /*                      1...5...10....5...20....5...30....5...40...5...50 */
 
 // measure voltage on which GPIO pins?
@@ -124,7 +124,12 @@ const char VERSION[] = "$Id: MySoilSensorESP32.cpp 1610 2024-07-06 10:18:53Z  $"
 #endif // CONFIG_IDF_TARGET_ESP32C3
 
 const size_t NCHANNELS = sizeof pins_sensor / sizeof pins_sensor[0];    ///< no of sensor channels
+
+/// max expected ADC value in millivolts
 const unsigned ADC_RANGE_MV = 3000;
+/// unconncted input with pulldown
+const unsigned ALMOST_ZERO_MV = 200;
+/// must have seen this much swing to consider measurement valid
 const unsigned MIN_SENSOR_DYNAMIC_RANGE = ADC_RANGE_MV / 20;
 
 //------------------------------------------------------------------------------
@@ -241,9 +246,9 @@ char msgbuf[256];
  * 
  * @return const char*  Pointer to static buffer with JSON string
  * @code
-    {"FreeHeap":45288}
+    {"FreeHeap":246456,"Boot":1,"Battery":3034,"Uptime":"999d 0:00:00","RSSI":90}
     1...5...10...15...20...25...30...35...40...45...50...55...60...65...70...75...80...85...90
-    @endcode
+   @endcode
  */
 const char* debug_to_json()
 {
@@ -291,9 +296,17 @@ const char* state_to_json()
         vabs.add(sensor_abs[i]);
         vrel.add(sensor_rel[i]);
     }
-    doc["wake"] = wake_duration;
+    if (wake_duration)
+        doc["wake"] = wake_duration;
 
     serializeJson(doc,msgbuf);
+    return msgbuf;
+}
+
+
+const char* wifi_to_json()
+{
+    reportWifi( msgbuf, sizeof msgbuf );
     return msgbuf;
 }
 
@@ -422,6 +435,17 @@ void mqttPublishState()
 {
     const char* json = state_to_json();
     mqttPublish("state",json);
+}
+
+
+/**
+ * Publish via MQTT a JSON string with Wifi status
+ * 
+ */
+void mqttPublishWifi()
+{
+    const char* json = wifi_to_json();
+    mqttPublish("wifi",json);
 }
 
 
@@ -577,8 +601,9 @@ void setup()
 
 //----- measure sensors
 
-        if (!ignoreSensors) {
+        if (!ignoreSensors) {   // ignore sensor readins for the first few minutes?
             Serial.printf("%5ld SENSOR: wait for power-up, ",millis());
+            // wait for sensor power supply
             while ( (unsigned long)(millis()-t_power) < SENSOR_RAMPUP_MS ) {
                 mqttClient.loop(); yield();
                 delay(100);
@@ -589,22 +614,30 @@ void setup()
 
             Serial.printf("%5d SENSOR: measure ",millis());
             for (int i=0; i<NCHANNELS; i++) {
-                sensor_abs[i] = analogReadMilliVolts(pins_sensor[i]);
-                SensorRange& r = ranges[i];
+                unsigned voltage = analogReadMilliVolts(pins_sensor[i]);
+                sensor_abs[i] = voltage;
                 Serial.printf("%d ",pins_sensor[i]);
-                if (sensor_abs[i] > r.vmax)
-                    r.vmax = sensor_abs[i];
-                if (sensor_abs[i] < r.vmin)
-                    r.vmin = sensor_abs[i];
-                r.valid = 
-                    ((r.vmax - r.vmin) > MIN_SENSOR_DYNAMIC_RANGE)
-                    && (r.vmin < ADC_RANGE_MV);
+                SensorRange& r = ranges[i];
+                if (voltage < ALMOST_ZERO_MV) {
+                    r.valid = false;
+                    r.vmin = ADC_RANGE_MV;
+                    r.vmax = 0;
+                } else {
+                    if (voltage > r.vmax)
+                        r.vmax = voltage;
+                    if (voltage < r.vmin)
+                        r.vmin = voltage;
+                    r.valid = 
+                        ((r.vmax - r.vmin) > MIN_SENSOR_DYNAMIC_RANGE)
+                        && (r.vmin < ADC_RANGE_MV)
+                        && (r.vmax > 0)
+                        ;
+                }
                 if (r.valid) {
-                    sensor_rel[i] = 1000 - (1000 * (sensor_abs[i] - r.vmin) / (r.vmax - r.vmin));
+                    sensor_rel[i] = 1000 - (1000 * (voltage - r.vmin) / (r.vmax - r.vmin));
                 } else {
                     sensor_rel[i] = -1;
                 }
-
                 mqttClient.loop(); yield();
             }
         } // if (!ignoreSensors)
@@ -613,12 +646,17 @@ void setup()
 
         Serial.printf("\n%5ld SENSOR: power down sensors ",millis());
         for (int pin : pins_power) {
+            digitalWrite( pin, LOW );
+        }
+        delay(10);
+        for (int pin : pins_power) {
             pinMode(pin,INPUT);
             Serial.printf("%d ",pin);
         }
         Serial.println();
 
         mqttPublishState();
+        mqttPublishWifi();
 
         delay(100); yield(); mqttClient.loop(); yield();
 

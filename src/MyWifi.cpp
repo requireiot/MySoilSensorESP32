@@ -4,7 +4,7 @@
  * Created		: 9-Feb-2020
  * Tabsize		: 4
  * 
- * This Revision: $Id: MyWifi.cpp 1608 2024-06-24 16:58:53Z  $
+ * This Revision: $Id: MyWifi.cpp 1616 2024-07-31 09:22:01Z  $
  */
 
 /*
@@ -32,6 +32,8 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <ArduinoJSON.h>        // MIT license, https://github.com/bblanchon/ArduinoJson
+
 #include "MyWifi.h"
 #include "myauth.h" // defines WIFI_SSID, WIFI_PASSWORD
 #include "ansi.h"
@@ -46,6 +48,8 @@ extern HardwareSerial DebugSerial;
 #define WIFI_CONFIG_VERSION 100
 
 WiFiClient wifiClient;
+
+unsigned t_setup = 0;   // filled by setupWifi()
 
 // keep in ESP32-C3 "RTC memory"
 RTC_DATA_ATTR WifiState wifiState;
@@ -101,6 +105,29 @@ static void _printConfig()
     Serial.printf("  Subnet  : %s", iptoa(wifiState.subnet) ); 
     Serial.printf("\t\tDNS     : %s\n", iptoa(wifiState.dns) ); 
     Serial.print(ANSI_RESET);
+}
+
+//----------------------------------------------------------------------------
+
+void reportWifi( char* msgbuf, size_t msglen )
+{
+    JsonDocument doc;
+
+    int dBm = WiFi.RSSI();        // in dBm
+    int quality;
+    if (dBm <= -100) {
+        quality = 0;
+    } else if (dBm >= -50) {
+        quality = 100;
+    } else {
+        quality = 2 * (dBm + 100);    
+    }
+
+    doc["ch"] = wifiState.channel;   
+    doc["RSSI"] = quality;
+    doc["dur"] = t_setup;
+
+    serializeJson(doc,msgbuf,msglen);
 }
 
 //----------------------------------------------------------------------------
@@ -276,13 +303,16 @@ bool setupWifi( bool allow_reconnect, void (*cb)(void) )
         if (cb) cb();
         if (ok) _fillConfig();
     }
+
+    uint32_t t_stop = millis();
+    t_setup = t_stop - t_start;
+
     if (ok)
         Serial.print( ANSI_BRIGHT_GREEN "\nWifi is connected." ANSI_RESET );
     else 
         Serial.print( ANSI_BRIGHT_RED "\nWifi is NOT connected." ANSI_RESET );
 
-    uint32_t t_stop = millis();
-    Serial.printf(" total WiFi setup: %u ms\n", t_stop-t_start );
+    Serial.printf(" total WiFi setup: %u ms\n", t_setup );
 
     _printConfig();
 

@@ -90,3 +90,17 @@ These factors contribute to power consumption or battery drain, in decreasing or
 2. wake time with WiFi on, up to 130 mA x ~1000ms per wakeup every hour, or **0.87 mAh** per day
 4. deep sleep, at ~14 µA or **0.34 mAh** per day
 5. the voltage divider for battery monitoring, bringing the 3.0V or 4.5V battery voltage down to the 2.5V accepted by the ESP32 ADC, at 2x 470 kOhm, or **0.08 mAh** per day
+
+## Wake time
+
+As explained above, the time the mdule stays awake each measurement cycle is important for overall power consumption, so I investigated the wake time in some detail.
+
+I build several of these units, so connected directly to the Wifi access point 
+( a AVM Fritzbox 7530), and some via a Wifi repeater (a Fritz Repeater 1200ax), 
+over a distance of 3-5m, through a massive outer brick wall ( or maybe through a window).
+
+On average, the wake time is about **1000 ms** for all units. Now and then, maybe 
+once or twice a day, the wake time is much larger, between **2000-3500 ms**. 
+This does not occur for all units at the same time, so it can't be due to, say, 
+the Wifi access point switching to a different Wifi channel. I have no explanation 
+for this behavior.

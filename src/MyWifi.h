@@ -5,7 +5,7 @@
  * Created		: 9-Feb-2020
  * Tabsize		: 4
  * 
- * This Revision: $Id: MyWifi.h 1595 2024-05-21 21:06:20Z  $
+ * This Revision: $Id: MyWifi.h 1616 2024-07-31 09:22:01Z  $
  */
 
 /*
@@ -61,5 +61,6 @@ struct WifiState {
 
 bool setupWifi( bool allow_reconnect=true, void (*cb)(void)=NULL );
 bool loopWifi();
+void reportWifi( char* buf, size_t buflen );
 
 #endif // _WIFI_H
