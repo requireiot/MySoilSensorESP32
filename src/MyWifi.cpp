@@ -4,7 +4,7 @@
  * Created		: 9-Feb-2020
  * Tabsize		: 4
  * 
- * This Revision: $Id: MyWifi.cpp 1616 2024-07-31 09:22:01Z  $
+ * This Revision: $Id: MyWifi.cpp 1618 2024-08-05 08:57:51Z  $
  */
 
 /*
@@ -38,31 +38,31 @@
 #include "myauth.h" // defines WIFI_SSID, WIFI_PASSWORD
 #include "ansi.h"
 
-//#undef Serial
-//#define Serial Serial0
+
+//----- constants and preferences
+
+#define WIFI_CONFIG_VERSION 100
+
+// allow automatic connection to Wifi AP on power up ?
+const bool AUTOCONNECT = false;
+
+//----- external references
 
 extern HardwareSerial DebugSerial;
 #undef Serial
 #define Serial DebugSerial
 
-#define WIFI_CONFIG_VERSION 100
+//----- local variables
 
 WiFiClient wifiClient;
 
-unsigned t_setup = 0;   // filled by setupWifi()
-
-// keep in ESP32-C3 "RTC memory"
+// keep in ESP32 "RTC memory"
 RTC_DATA_ATTR WifiState wifiState;
 
-//#define USE_BUILTIN_LED
+static unsigned t_setup = 0;    // filled by setupWifi()
 
-#ifdef USE_BUILTIN_LED
- #define WIFI_LED_ON   digitalWrite(LED_BUILTIN,LOW)
- #define WIFI_LED_OFF  digitalWrite(LED_BUILTIN,HIGH)
-#else
- #define WIFI_LED_ON
- #define WIFI_LED_OFF
-#endif
+enum connect_t { error=0, autoconnect, reconnect, freshconnect };
+static connect_t connected = connect_t::error;       // filled by setupWifi()
 
 //----------------------------------------------------------------------------
 
@@ -104,11 +104,24 @@ static void _printConfig()
     Serial.printf("\tGateway : %s\n", iptoa(wifiState.gateway) ); 
     Serial.printf("  Subnet  : %s", iptoa(wifiState.subnet) ); 
     Serial.printf("\t\tDNS     : %s\n", iptoa(wifiState.dns) ); 
+
+    //----- report MAC address
+    uint8_t mac[6];
+    WiFi.macAddress(mac);
+    Serial.printf("  MAC %02X:%02X:%02X:%02X:%02X:%02X\n",
+        mac[0],mac[1],mac[2],mac[3],mac[4],mac[5]);
+
     Serial.print(ANSI_RESET);
 }
 
 //----------------------------------------------------------------------------
 
+/**
+ * @brief Create JSON report with Wifi performance parameters
+ * 
+ * @param msgbuf  string buffer to be filled
+ * @param msglen  length of string buffer
+ */
 void reportWifi( char* msgbuf, size_t msglen )
 {
     JsonDocument doc;
@@ -126,6 +139,7 @@ void reportWifi( char* msgbuf, size_t msglen )
     doc["ch"] = wifiState.channel;   
     doc["RSSI"] = quality;
     doc["dur"] = t_setup;
+    doc["connect"] = (int)connected;
 
     serializeJson(doc,msgbuf,msglen);
 }
@@ -158,14 +172,14 @@ void onWiFiEvent(WiFiEvent_t event) {
 /**
  * @brief Try to re-connect to same WiFi AP as before.
  * 
- * @param   pState  points to struct with WiFi parameters
+ * @param   cb   callback function or none, will be called once
  * @return  true if connection was successful, else app should try _freshConnect
  */
 static bool _reconnectWifi( void (*cb)(void) )
 {
     const uint32_t timeout = 5000;      // 5 seconds
-    bool blink = false;
     uint32_t t1, t2;
+    int wfs;
 
     Serial.printf("try to re-connect ch=%d ... ", wifiState.channel);
     uint32_t t_start = millis();
@@ -174,15 +188,13 @@ static bool _reconnectWifi( void (*cb)(void) )
     WiFi.config( wifiState.ip, wifiState.gateway, wifiState.subnet, wifiState.dns, wifiState.dns );
     WiFi.begin( WIFI_SSID, WIFI_PASSWORD, wifiState.channel, wifiState.bssid, true );
 
-    delay(200);
+    t1 = millis();
+
+    //delay(100); // was 200
     if (cb) cb();
 
-    t1 = millis();
-    int wfs;
-    
     while( (wfs=WiFi.status()) != WL_CONNECTED ) {
         Serial.print(".");
-        if (blink) { WIFI_LED_ON; } else { WIFI_LED_OFF; } blink = !blink;   
     
         if (wfs == WL_CONNECT_FAILED) {
             Serial.println("Failed to connect");
@@ -190,7 +202,6 @@ static bool _reconnectWifi( void (*cb)(void) )
         }
 
         if ((uint32_t)(millis() - t_start) > timeout) {
-            WIFI_LED_OFF;
             Serial.print( ANSI_BRIGHT_RED ANSI_BOLD "ERROR  " ANSI_RESET );
             WiFi.disconnect();
             yield();
@@ -203,7 +214,6 @@ static bool _reconnectWifi( void (*cb)(void) )
     t2 = millis();
     Serial.printf(" wait:%u ms ", (unsigned)(t2-t1));
 
-    WIFI_LED_OFF;
     return true;
 }
 
@@ -218,14 +228,12 @@ static bool _reconnectWifi( void (*cb)(void) )
 static bool _freshConnectWifi()
 {
     const uint32_t timeout = 10000; // 20 seconds
-    bool blink = false;
     wl_status_t ws;
     unsigned t;
 
     Serial.printf("\nfresh connect, SSID='%s' pw='****'\n",WIFI_SSID);
     uint32_t t_start = millis();
 
-//    WiFi.config( IPADDR_NONE, IPADDR_NONE, IPADDR_NONE, IPADDR_NONE );
     WiFi.begin( WIFI_SSID, WIFI_PASSWORD );
     yield();
 
@@ -233,10 +241,8 @@ static bool _freshConnectWifi()
         ws = WiFi.status();
         t = (unsigned)(millis() - t_start);
         Serial.printf(" %3d\r",(int)(ws));
-        if (blink) { WIFI_LED_ON; } else { WIFI_LED_OFF; } blink = !blink;
         delay(200);
         if (t > timeout) {
-            WIFI_LED_OFF;
             Serial.print("ERROR  ");
             WiFi.disconnect();
             delay( 1 );
@@ -244,7 +250,6 @@ static bool _freshConnectWifi()
             return false;
         }
     }
-    WIFI_LED_OFF;
     yield();
     if (WiFi.isConnected()) {
         Serial.print(" ok ...");
@@ -267,14 +272,16 @@ static bool _freshConnectWifi()
  *                          connect. This function is guaranteed to be called 
  *                          exactly once, independent of the success of the WiFi 
  *                          connection
- * @return true  if connection was successful
- * @return false  if reconnect and fresh connect failed
+ * @return 1  if automatic reconnection was successful
+ * @return 2  if reconnection was successful
+ * @return 3  if fresh connection was successful
+  * @return 0  if reconnect and fresh connect failed
  */
-bool setupWifi( bool allow_reconnect, void (*cb)(void) )
+int setupWifi( bool allow_reconnect, void (*cb)(void) )
 {
-    bool ok = false;
+    connected = connect_t::error;
     bool isValid = wifiState.is_valid();
-    bool reconnect = isValid && allow_reconnect;
+    allow_reconnect = isValid && allow_reconnect;
 
     Serial.printf("Wifi: config is %s valid, try to connect ... ", 
         isValid ? "" : 
@@ -283,65 +290,48 @@ bool setupWifi( bool allow_reconnect, void (*cb)(void) )
 
     uint32_t t_start = millis();
 
-    WiFi.persistent(- false );
+    WiFi.persistent( AUTOCONNECT );
     WiFi.mode(WIFI_STA);
-    WiFi.setAutoConnect(reconnect);
-    WiFi.setAutoReconnect(reconnect);
+    WiFi.setAutoReconnect(allow_reconnect);
     yield();
 
-    if (reconnect) {
-        if (WiFi.waitForConnectResult(100) == WL_CONNECTED) {
+    if (allow_reconnect) {
+        if (AUTOCONNECT && (WiFi.waitForConnectResult(300) == WL_CONNECTED)) {
             Serial.print("already connected ... ");
-            ok = true;
+            connected = connect_t::autoconnect;
             if (cb) cb();
         } else if (isValid) {
-            ok = _reconnectWifi( cb );
+            connected = _reconnectWifi( cb ) ? connect_t::reconnect : connect_t::error;
         }
     }
-    if (!ok) {
-        ok = _freshConnectWifi();
+    if (!connected) {
+        connected = _freshConnectWifi() ? connect_t::freshconnect : connect_t::error;
         if (cb) cb();
-        if (ok) _fillConfig();
+        if (connected) _fillConfig();
     }
 
     uint32_t t_stop = millis();
     t_setup = t_stop - t_start;
 
-    if (ok)
+    if (connected) {
         Serial.print( ANSI_BRIGHT_GREEN "\nWifi is connected." ANSI_RESET );
-    else 
+        Serial.printf(" mode %d, time to connect %u ms\n", (int)connected, t_setup );
+    } else {
         Serial.print( ANSI_BRIGHT_RED "\nWifi is NOT connected." ANSI_RESET );
+    }
 
-    Serial.printf(" total WiFi setup: %u ms\n", t_setup );
+    //_printConfig();
 
-    _printConfig();
-
-    if (!ok) 
+    if (!connected) 
         return false;
 
-    Serial.print( ANSI_WHITE );
 #ifdef MY_HOSTNAME
     Serial.printf("  hostname='%s'  ",MY_HOSTNAME);
     WiFi.setHostname(MY_HOSTNAME);
 #endif
 
-    //----- report MAC address
-    char msgbuf[80];
-    uint8_t mac[6];
-    WiFi.macAddress(mac);
-    snprintf(msgbuf,sizeof(msgbuf),"MAC %02X:%02X:%02X:%02X:%02X:%02X  ",
-        mac[0],mac[1],mac[2],mac[3],mac[4],mac[5]);
-	Serial.print(msgbuf);
-
-    //----- report IP address
-    IPAddress ip;
-    ip=WiFi.localIP();
-    snprintf(msgbuf,sizeof(msgbuf),"IP %d.%d.%d.%d", ip[0],ip[1],ip[2],ip[3] );
-	Serial.println(msgbuf);
-    Serial.print( ANSI_RESET );
-
     _fillConfig();
-    return true;
+    return int(connected);
 }
 
 

@@ -4,6 +4,21 @@ This is part of my home automation setup. For details, see my [blog](https://req
 
 <img src="pictures/overview.jpg" width="400" /> 
 
+- [MySoilSensorESP32 -- a multi-channel soil moisture sensor with long battery life](#mysoilsensoresp32----a-multi-channel-soil-moisture-sensor-with-long-battery-life)
+- [Objective](#objective)
+- [Architecture](#architecture)
+- [Design decisions](#design-decisions)
+  - [Wifi vs. NRF24](#wifi-vs-nrf24)
+  - [How to make it waterproof-ish](#how-to-make-it-waterproof-ish)
+- [Build instructions](#build-instructions)
+- [MQTT messages](#mqtt-messages)
+- [Over-the-air update](#over-the-air-update)
+- [Power consumption and battery life](#power-consumption-and-battery-life)
+  - [Power saving considerations](#power-saving-considerations)
+  - [Wake time](#wake-time)
+  - [Actual power consumption](#actual-power-consumption)
+
+
 ## Objective
 In summer, I have a lot of potted plants out on the balcony, and need to know when to water them. Indoors, I have mostly home automation gadgets based on MySensors, but out on the balcony the signal is too weak, so I needed something Wifi-based, but without the high battery consumption typical of Wifi solutions.
 
@@ -13,6 +28,16 @@ In summer, I have a lot of potted plants out on the balcony, and need to know wh
 - up to 4 cheap capacitive soil sensors, of the kind you find at Aliexpress for under a Euro
 - my home network, with a DHCP server assigning pseudo-static IP addresses to everybody (based on MAC address)
 - my home automation system, with an MQTT broker and OpenHAB for visualization and control
+
+## Design decisions
+
+### Wifi vs. NRF24
+
+Most of my home automation stuff is built around NRF24 modules and the [MySensors](https://www.mysensors.org/) ecosystem, but I was having difficulties with reliable communication between the sensors on the balcony and the hub indoors, so I opted for Wifi this time. Also, having TCP/IP avaialble made it easier to do all communication via an MQTT broker.
+
+### How to make it waterproof-ish
+
+There will be rain out on the balcony, so the modules need to be waterproof-ish. Real waterproof sealed cases are expensive, so I opted for a cheap plastic case with a ziploc bag over it, with teh opening facing down ... good enough for the intended usecase.
 
 ## Build instructions
 
@@ -70,28 +95,22 @@ To perform an OTA firmware update,
 1. wait for the item to revert to OFF. I watch it with a tool like MQTT Explorer, or run this shell command repeatedly <br/> `mosquitto_sub -h ha-server -t "soil/esp32-D80270/ota"`  
 1. upload your firmware via Platformio
 
-## Power saving considerations
+## Power consumption and battery life
+
+### Power saving considerations
 
 Minimize deep sleep power consumption:
   - a bare ESP32-WROOM module is better than a development module -- probably due to the voltage regulator and USB interfaces on those modules
-  - use a LDO voltage regulator with low quiescent current -- I found the HT7833 works well
+  - if a voltage regulator is needed, then use a LDO voltage regulator with low quiescent current -- I found the HT7833 works well
   - alternatively, power the device directly from two AA or AAA batteries -- in this case, you may need to modify the soil sensors as described above
   - the soil sensors are *powered* by GPIO pins, which are turned off during sleep
 
 Minimize the duration of active Wifi during a wake period:
   - try to reconnect to Wifi using previously established SSID, IP and channel number, which are cached in RTC memory
- 
-Power consumption, during deep sleep, with a bare ESP32-WROOM, powered from 2x AA battery is **14µA**, or powered from 3x AAA battery via LDO voltage regulator is **14µA**.
 
-## Power consumption and battery life
+Power consumption, during deep sleep, with a bare ESP32-WROOM, powered from 2x AAA battery is **14µA**.
 
-These factors contribute to power consumption or battery drain, in decreasing order of importance:
-1. the self-discharge of the batteries, according to [[1]](http://www.gammon.com.au/power), about 35 µA or **0.84 mAh** per day (for AAA batteries)
-2. wake time with WiFi on, up to 130 mA x ~1000ms per wakeup every hour, or **0.87 mAh** per day
-4. deep sleep, at ~14 µA or **0.34 mAh** per day
-5. the voltage divider for battery monitoring, bringing the 3.0V or 4.5V battery voltage down to the 2.5V accepted by the ESP32 ADC, at 2x 470 kOhm, or **0.08 mAh** per day
-
-## Wake time
+### Wake time
 
 As explained above, the time the mdule stays awake each measurement cycle is important for overall power consumption, so I investigated the wake time in some detail.
 
@@ -99,8 +118,15 @@ I build several of these units, so connected directly to the Wifi access point
 ( a AVM Fritzbox 7530), and some via a Wifi repeater (a Fritz Repeater 1200ax), 
 over a distance of 3-5m, through a massive outer brick wall ( or maybe through a window).
 
-On average, the wake time is about **1000 ms** for all units. Now and then, maybe 
-once or twice a day, the wake time is much larger, between **2000-3500 ms**. 
-This does not occur for all units at the same time, so it can't be due to, say, 
-the Wifi access point switching to a different Wifi channel. I have no explanation 
-for this behavior.
+On average, the wake time is about **400 ms** for all units. Now and then, maybe 
+once or twice a day, the wake time is much larger, above **1000 ms**. This appears to happen mostly when the Wifi access point has switched to a adifferent Wifi channel. When I configured my access point to use a fixed Wifi channel, these long wake time events could no longer be observed,
+
+### Actual power consumption
+
+These factors contribute to power consumption or battery drain, 
+in decreasing order of importance:
+1. the self-discharge of the batteries, according to [[1]](http://www.gammon.com.au/power), 
+about 35 µA or **0.84 mAh** per day (for AAA batteries)
+2. wake time with WiFi on, up to 130 mA x ~400ms per wakeup every hour, or **0.39 mAh** per day
+3. deep sleep, at ~14 µA or **0.34 mAh** per day
+4. the voltage divider for battery monitoring, bringing the 3.0V or 4.5V battery voltage down to the 2.5V accepted by the ESP32 ADC, at 2x 470 kOhm, or **0.08 mAh** per day

@@ -5,7 +5,7 @@
  * Created		: 14-May-2024
  * Tabsize		: 4
  * 
- * This Revision: $Id: MySoilSensorESP32.cpp 1616 2024-07-31 09:22:01Z  $
+ * This Revision: $Id: MySoilSensorESP32.cpp 1620 2024-08-05 14:46:56Z  $
  */
 
 /*
@@ -83,7 +83,8 @@
 #define MQTT_BROKER "ha-server"
 
 /// version string published at startup.
-const char VERSION[] = "$Id: MySoilSensorESP32.cpp 1616 2024-07-31 09:22:01Z  $";
+const char VERSION[] = "$Id: MySoilSensorESP32.cpp 1620 2024-08-05 14:46:56Z  $";
+
 /*                      1...5...10....5...20....5...30....5...40...5...50 */
 
 // measure voltage on which GPIO pins?
@@ -135,6 +136,52 @@ const unsigned MIN_SENSOR_DYNAMIC_RANGE = ADC_RANGE_MV / 20;
 //------------------------------------------------------------------------------
 #pragma endregion
 //==============================================================================
+#pragma region Configuration
+
+//----- Timing phrases
+#define SECONDS		
+#define MINUTES 	* 60uL SECONDS
+#define HOURS 		* 60uL MINUTES
+#define DAYS		* 24uL HOURS
+
+#define SIGNATURE 0xDEADBEEF
+
+struct Configuration {
+    unsigned signature;
+    unsigned meas_interval;     //< interval between measurements, in seconds    
+    unsigned info_interval;     //< interval between debug reports, in seconds
+    unsigned nsamples;          //< how many samples to average per ADC channel
+    unsigned powerup;           //< time to power up sensors, in milliseconds
+};
+
+const Configuration defaultConfiguration = {
+    .signature = SIGNATURE,
+    .meas_interval = 60 MINUTES,
+    .info_interval = 12 HOURS,
+    .nsamples = 20,
+    .powerup = 200
+};
+
+RTC_DATA_ATTR Configuration config;
+
+bool config_changed = false;
+
+void setConfiguration( const char* json )
+{
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, json);
+    if (error) return;
+    config.info_interval = doc["info"] | config.info_interval;
+    config.meas_interval = doc["meas"] | config.meas_interval;
+    config.nsamples = doc["samples"] | config.nsamples;
+    config.powerup = doc["powerup"] | config.powerup;
+    config_changed = true;
+}
+
+
+//------------------------------------------------------------------------------
+#pragma endregion
+//==============================================================================
 #pragma region Timing
 
 /*
@@ -145,27 +192,22 @@ const unsigned MIN_SENSOR_DYNAMIC_RANGE = ADC_RANGE_MV / 20;
     an int32_t can represent up to 68 years in seconds
 */
 
-//----- Timing definitions
-#define SECONDS		
-#define MINUTES 	* 60uL SECONDS
-#define HOURS 		* 60uL MINUTES
-#define DAYS		* 24uL HOURS
 
 #ifdef QUICK    // shortened timing, for debugging only, may be defined in myauth.h
  // minimum time between refreshes
  const unsigned long SOIL_REPORT_INTERVAL_S = 30 SECONDS;  
- const unsigned long DEBUG_REPORT_INTERVAL_S = 60 SECONDS;
+ const unsigned long INFO_REPORT_INTERVAL_S = 60 SECONDS;
   // ignore the first few minutes, before th user places the sensor in the soil
   const unsigned long IGNORE_FIRST           = 30 SECONDS;
 #else
  // minimum time between refreshes
- const unsigned long SOIL_REPORT_INTERVAL_S = 60 MINUTES;   
- const unsigned long DEBUG_REPORT_INTERVAL_S = 12 HOURS;
-  // ignore the first few minutes, before th user places the sensor in the soil
-  const unsigned long IGNORE_FIRST           = 5 MINUTES;
+ #define SOIL_REPORT_INTERVAL_S config.meas_interval
+ #define INFO_REPORT_INTERVAL_S config.info_interval
+  // ignore the first few minutes, before the user places the sensor in the soil
+  const unsigned long IGNORE_FIRST = 5 MINUTES;
 #endif
 
-const unsigned long SENSOR_RAMPUP_MS = 750;    // milliseconds
+#define SENSOR_RAMPUP_MS config.powerup
 
 //------------------------------------------------------------------------------
 #pragma endregion
@@ -178,6 +220,7 @@ bool firstRun = false;      ///< flag, this is not waking up from deep sleep
 String hostname;
 String mqttbase;
 String topic_ota;
+String topic_config;
 
 #ifdef PIN_BATTERY
  int battery_mV;            ///< measured battery voltage, in millivolts
@@ -188,8 +231,6 @@ RTC_DATA_ATTR uint64_t bootCount;       ///< count # of times we have woken up f
 RTC_DATA_ATTR time_t lastDebugReport_s; ///< time is s of last time battery etc was reported
 // how long were we awake? Remember in RTC memory and report next time
 RTC_DATA_ATTR unsigned wake_duration;
-RTC_DATA_ATTR unsigned wake_duration_sum;
-RTC_DATA_ATTR unsigned wake_count;
 
 //----- measurements
 int sensor_abs[NCHANNELS];  ///< absolute measurements of sensor output, in mV
@@ -272,11 +313,6 @@ const char* debug_to_json()
     doc["Uptime"] = Uptime.c_str();
     doc["RSSI"] = quality;
 
-    if (wake_count) {
-        doc["WakeTime"] = (unsigned)(wake_duration_sum / wake_count);
-        wake_count = 0;
-        wake_duration_sum = 0;
-    }
     serializeJson(doc,msgbuf);
     return msgbuf;
 }
@@ -328,12 +364,16 @@ void subscribeCallback(char* topic, byte* payload, unsigned length)
     String spay(payload,length);
 
     Serial.printf(
-        "%5ld MQTT: received '" ANSI_BLUE "%s" ANSI_RESET "' = '%s'\n",
+        "\n%5ld MQTT: "
+        "received '" ANSI_BLUE "%s" ANSI_RESET "'"
+        " = '" ANSI_BOLD "%s" ANSI_RESET "'\n",
         millis(), topic, spay.c_str() );
     if (0==strcmp( topic, topic_ota.c_str())) {
         if ( (spay=="on") || (spay=="ON") || (spay=="1") ) {
             request_ota = true;
         }
+    } else if (0==strcmp( topic, topic_config.c_str())) {
+        setConfiguration( spay.c_str() );
     }
 }
 
@@ -354,25 +394,28 @@ bool mqttConnect()
         millis(), clientName, MQTT_BROKER );
 
     topic_ota = mqttbase + "ota";
-    //delay(50);
+    topic_config = mqttbase + "config";
 
     int waitms = 100;
     for (int i=0; i<10; i++) {
+        mqttClient.loop(); yield();
     	if (mqttClient.connect(clientName)) {
     		Serial.printf( "%5ld MQTT: " ANSI_BRIGHT_GREEN "connected\n" ANSI_RESET, millis());
+
             mqttClient.subscribe( topic_ota.c_str() );
-            delay(10);
-            mqttClient.loop();
-            yield();
             Serial.printf(
-                "%5ld MQTT: "
-                "subscribed to " ANSI_BLUE "%s" ANSI_RESET "\n", 
+                "%5ld MQTT: subscribed to " ANSI_BLUE "%s" ANSI_RESET "\n", 
                 millis(), topic_ota.c_str() );
+
+            mqttClient.subscribe( topic_config.c_str() );
+            Serial.printf(
+                "%5ld MQTT: subscribed to " ANSI_BLUE "%s" ANSI_RESET "\n", 
+                millis(), topic_config.c_str() );
+
             return true;
     	} else {
             int st = mqttClient.state();
     		Serial.printf("%5ld MQTT: failed %d, rc=%d\n", millis(), i, st);
-            //yield(); mqttClient.loop();
             delay(waitms);
             waitms *= 2;
     	}
@@ -400,7 +443,6 @@ bool mqttReconnect()
 void mqttPublish( const char* subtopic, const char* message, bool retain=false )
 {
 	if (!mqttClient.connected()) return;
-//    delay(10); mqttClient.loop(); yield();
     yield(); mqttClient.loop(); yield();
 
     String topic = mqttbase + subtopic;
@@ -413,7 +455,7 @@ void mqttPublish( const char* subtopic, const char* message, bool retain=false )
 	} else {
 		Serial.print("MQTT: publish " ANSI_BRIGHT_RED "fail" ANSI_RESET "\n");
 	}
-    delay(10); mqttClient.loop(); 
+    yield(); mqttClient.loop(); yield();
 }
 
 
@@ -475,6 +517,52 @@ void mqttSetup()
 //------------------------------------------------------------------------------
 #pragma endregion
 //==============================================================================
+#pragma region ADC measurement
+
+
+// qsort requires you to create a sort function
+int sorter(const void *cmp1, const void *cmp2)
+{
+  // Need to cast the void * to int *
+  unsigned a = *((unsigned *)cmp1);
+  unsigned b = *((unsigned *)cmp2);
+  // The comparison
+  return a > b ? -1 : (a < b ? 1 : 0);
+}
+
+
+/**
+ * @brief Read ADC, and do some primitive noise reduction by averaging multiple
+ * samples
+ * 
+ * @param pin   ESP32 pin number
+ * @return unsigned   measured voltage in millivolts
+ */
+unsigned measureSensor( int pin )
+{
+    unsigned voltage;
+    const unsigned NSAMPLES = 20;
+    unsigned samples[NSAMPLES];
+
+    // ignore 1st measurement
+    voltage = analogReadMilliVolts(pin);
+    // take multiple samples
+    for (int i=0; i<NSAMPLES; i++)
+        samples[i] = analogReadMilliVolts(pin);
+    // sort
+    qsort( samples, NSAMPLES, sizeof(samples[0]), sorter );
+    // average all measurements except for highest and lowest
+    unsigned sum=0;
+    for (int i=1; i<NSAMPLES-1; i++)
+        sum += samples[i];
+    voltage = sum/ (NSAMPLES-2);
+
+    return voltage;
+}
+
+//------------------------------------------------------------------------------
+#pragma endregion
+//==============================================================================
 #pragma region Arduino standard functions
 
 /**
@@ -491,12 +579,14 @@ void setup()
 #endif
 
   	int rtc_reset_reason = rtc_get_reset_reason(0); 
+
+    if ((config.signature != SIGNATURE) || (rtc_reset_reason != DEEPSLEEP_RESET))
+        memcpy( &config, &defaultConfiguration, sizeof(Configuration) );
+
     if (rtc_reset_reason != DEEPSLEEP_RESET) { // we did not wake up from deep sleep
         firstRun = true;
         memset( ranges, 0, sizeof ranges );
         for (int i=0; i<NCHANNELS; i++) ranges[i].vmin = ADC_RANGE_MV;
-        wake_count = 0;
-        wake_duration_sum = 0;
 
         struct timeval tv;
         tv.tv_sec =  0;
@@ -542,7 +632,7 @@ void setup()
     Serial.printf( "  Battery " ANSI_BOLD "%d" ANSI_RESET "mV",
         battery_mV );
 #endif
-    Serial.printf( "  Time " ANSI_BRIGHT_BLUE "%ld" ANSI_RESET "  Uptime %s", 
+    Serial.printf( "  Time " ANSI_BRIGHT_BLUE "%ld" ANSI_RESET "s  Uptime %s", 
         now_s, Uptime.c_str() );
     Serial.println();
 
@@ -558,10 +648,11 @@ void setup()
 
     yield();
 
-//----- power up the sensors ... they need 500ms to warm up, so do this before Wifi
+//----- power up the sensors ... they need some time to warm up, so do this before Wifi
 
     unsigned long t_power = millis();
-    Serial.printf("SENSOR: at %ld power up ",t_power);
+    //Serial.printf("SENSOR: at %ld power up ",t_power);
+    Serial.printf("%5ld SENSOR: power-up, ",t_power);
     for (auto pin : pins_power) {
         pinMode( pin, OUTPUT );
         digitalWrite( pin, HIGH );
@@ -571,7 +662,7 @@ void setup()
 
 //----- turn on Wifi -----------------------------------------------------------
 
-    bool wifiOk = setupWifi( !firstRun );
+    int wifiOk = setupWifi( !firstRun );
     esp_wifi_set_max_tx_power(40); // 10 dBm
 
 //----- do MQTT stuff ----------------------------------------------------------
@@ -580,10 +671,6 @@ void setup()
 
         hostname = WiFi.getHostname();
         mqttbase = "soil/" + hostname + "/";
-        Serial.printf(
-            "Hostname '" ANSI_BRIGHT_BLUE "%s" ANSI_RESET "' "
-            "MQTT base = '" ANSI_BRIGHT_BLUE "%s" ANSI_RESET "'\n",
-            hostname.c_str(), mqttbase.c_str() );
 
         mqttSetup();
         if (firstRun)
@@ -591,22 +678,25 @@ void setup()
         
         // report bat voltage etc at first round, and then every 12h or so
         if (firstRun || 
-            ( (time_t)(now_s - lastDebugReport_s) > DEBUG_REPORT_INTERVAL_S) 
+            ( (time_t)(now_s - lastDebugReport_s) > INFO_REPORT_INTERVAL_S) 
         ) {
             lastDebugReport_s = now_s;
             mqttPublishDebug();
         } else {
-            mqttClient.loop(); yield();
+            yield(); mqttClient.loop(); yield();
         }
+        mqttPublishWifi();
 
 //----- measure sensors
 
         if (!ignoreSensors) {   // ignore sensor readins for the first few minutes?
             Serial.printf("%5ld SENSOR: wait for power-up, ",millis());
+
             // wait for sensor power supply
+            mqttClient.loop(); yield();
             while ( (unsigned long)(millis()-t_power) < SENSOR_RAMPUP_MS ) {
-                mqttClient.loop(); yield();
-                delay(100);
+                yield(); mqttClient.loop(); yield();
+                delay(50);
             }
             Serial.print("range:"); 
             for (auto r : ranges ) Serial.printf(" %d:%d",r.vmin,r.vmax);
@@ -614,7 +704,11 @@ void setup()
 
             Serial.printf("%5d SENSOR: measure ",millis());
             for (int i=0; i<NCHANNELS; i++) {
-                unsigned voltage = analogReadMilliVolts(pins_sensor[i]);
+                yield(); mqttClient.loop(); yield();  
+
+                //unsigned voltage = analogReadMilliVolts(pins_sensor[i]);
+                unsigned voltage = measureSensor(pins_sensor[i]);
+
                 sensor_abs[i] = voltage;
                 Serial.printf("%d ",pins_sensor[i]);
                 SensorRange& r = ranges[i];
@@ -638,7 +732,7 @@ void setup()
                 } else {
                     sensor_rel[i] = -1;
                 }
-                mqttClient.loop(); yield();
+                yield(); mqttClient.loop(); yield();
             }
         } // if (!ignoreSensors)
         
@@ -656,9 +750,13 @@ void setup()
         Serial.println();
 
         mqttPublishState();
-        mqttPublishWifi();
 
         delay(100); yield(); mqttClient.loop(); yield();
+
+        if (config_changed) {
+            mqttClient.publish( topic_config.c_str(), NULL, (boolean)true );
+            yield(); mqttClient.loop(); yield();
+        }
 
         if (request_ota) {
             mqttPublish("ota","OFF",true);
@@ -692,9 +790,6 @@ void setup()
 
     uint32_t t_setup_end = millis();
     wake_duration = t_setup_end - t_setup_start;
-    wake_count++;
-    wake_duration_sum += wake_duration;
-
     Serial.printf(
         "\nRan for " ANSI_BOLD "%u" ANSI_RESET " ms, going to sleep now.\n", 
         wake_duration
