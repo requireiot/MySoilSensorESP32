@@ -5,7 +5,7 @@
  * Created		: 14-May-2024
  * Tabsize		: 4
  * 
- * This Revision: $Id: MySoilSensorESP32.cpp 1620 2024-08-05 14:46:56Z  $
+ * This Revision: $Id: MySoilSensorESP32.cpp 1623 2024-08-09 14:18:24Z  $
  */
 
 /*
@@ -22,6 +22,9 @@
  * @brief Multi-channel soil moisture sensor, reporting via MQTT,
  * using an ESP32 module
  * 
+ * The code is sprinkled with yield() statements, this is probably unnecessary
+ * for the dual core ESP32, where the Wifi code runs on the 2nd core, but it 
+ * may be needed for the single-code ESP32-C3
  */
 
 //==============================================================================
@@ -82,8 +85,14 @@
 
 #define MQTT_BROKER "ha-server"
 
+#define SUBTOPIC_DATA "state"   // topic is soil/hostname/state
+#define SUBTOPIC_INFO "debug"
+#define SUBTOPIC_OTA "ota"
+#define SUBTOPIC_CONFIG "config"
+
+
 /// version string published at startup.
-const char VERSION[] = "$Id: MySoilSensorESP32.cpp 1620 2024-08-05 14:46:56Z  $";
+const char VERSION[] = "$Id: MySoilSensorESP32.cpp 1623 2024-08-09 14:18:24Z  $";
 
 /*                      1...5...10....5...20....5...30....5...40...5...50 */
 
@@ -150,7 +159,6 @@ struct Configuration {
     unsigned signature;
     unsigned meas_interval;     //< interval between measurements, in seconds    
     unsigned info_interval;     //< interval between debug reports, in seconds
-    unsigned nsamples;          //< how many samples to average per ADC channel
     unsigned powerup;           //< time to power up sensors, in milliseconds
 };
 
@@ -158,8 +166,7 @@ const Configuration defaultConfiguration = {
     .signature = SIGNATURE,
     .meas_interval = 60 MINUTES,
     .info_interval = 12 HOURS,
-    .nsamples = 20,
-    .powerup = 200
+    .powerup = 150
 };
 
 RTC_DATA_ATTR Configuration config;
@@ -173,7 +180,6 @@ void setConfiguration( const char* json )
     if (error) return;
     config.info_interval = doc["info"] | config.info_interval;
     config.meas_interval = doc["meas"] | config.meas_interval;
-    config.nsamples = doc["samples"] | config.nsamples;
     config.powerup = doc["powerup"] | config.powerup;
     config_changed = true;
 }
@@ -221,6 +227,9 @@ String hostname;
 String mqttbase;
 String topic_ota;
 String topic_config;
+
+uint32_t t_mqtt;            ///< took this long to connect to MQTT broker [ms]
+uint32_t t_dns;             ///< took this long to look up MQTT broker hostname
 
 #ifdef PIN_BATTERY
  int battery_mV;            ///< measured battery voltage, in millivolts
@@ -295,23 +304,12 @@ const char* debug_to_json()
 {
     JsonDocument doc;
 
-    int dBm = WiFi.RSSI();        // in dBm
-    int quality;
-    if (dBm <= -100) {
-        quality = 0;
-    } else if (dBm >= -50) {
-        quality = 100;
-    } else {
-        quality = 2 * (dBm + 100);    
-    }
-
     doc["FreeHeap"] = ESP.getFreeHeap();   
     doc["Boot"] = bootCount;
 #ifdef PIN_BATTERY
     doc["Battery"] = battery_mV;
 #endif
     doc["Uptime"] = Uptime.c_str();
-    doc["RSSI"] = quality;
 
     serializeJson(doc,msgbuf);
     return msgbuf;
@@ -342,7 +340,14 @@ const char* state_to_json()
 
 const char* wifi_to_json()
 {
-    reportWifi( msgbuf, sizeof msgbuf );
+    JsonDocument doc;
+   
+    reportWifi( doc );
+
+    doc["mqtt"] = t_mqtt;
+    doc["dns"] = t_dns;
+
+    serializeJson(doc,msgbuf);
     return msgbuf;
 }
 
@@ -351,6 +356,16 @@ const char* wifi_to_json()
 #pragma endregion
 //==============================================================================
 #pragma region MQTT stuff
+
+void active_wait( unsigned ms )
+{
+    while (ms--) {
+        delay(1);
+        if (mqttClient.connected()) mqttClient.loop();
+        yield();
+    }
+}
+
 
 /**
  * @brief Callback function called by PubSubClient library when MQTT message received
@@ -364,7 +379,7 @@ void subscribeCallback(char* topic, byte* payload, unsigned length)
     String spay(payload,length);
 
     Serial.printf(
-        "\n%5ld MQTT: "
+        "\n%5lu MQTT: "
         "received '" ANSI_BLUE "%s" ANSI_RESET "'"
         " = '" ANSI_BOLD "%s" ANSI_RESET "'\n",
         millis(), topic, spay.c_str() );
@@ -386,31 +401,43 @@ void subscribeCallback(char* topic, byte* payload, unsigned length)
 bool mqttConnect() 
 {
     unsigned nAttempts=0;
-
+    uint32_t t_begin, t_end;
     const char* clientName = hostname.c_str();
+
     Serial.printf(
-        "%5ld MQTT: connecting as '" ANSI_BLUE "%s" ANSI_RESET 
+        "%5lu MQTT: connecting as '" ANSI_BLUE "%s" ANSI_RESET 
         "' to broker '" ANSI_BLUE "%s" ANSI_RESET "'\n", 
         millis(), clientName, MQTT_BROKER );
 
-    topic_ota = mqttbase + "ota";
-    topic_config = mqttbase + "config";
+    topic_ota = mqttbase + SUBTOPIC_OTA;
+    topic_config = mqttbase + SUBTOPIC_CONFIG;
 
+    t_begin = millis();
     int waitms = 100;
     for (int i=0; i<10; i++) {
         mqttClient.loop(); yield();
     	if (mqttClient.connect(clientName)) {
-    		Serial.printf( "%5ld MQTT: " ANSI_BRIGHT_GREEN "connected\n" ANSI_RESET, millis());
+            t_end = millis();
+            t_mqtt = t_end - t_begin;
+
+    		Serial.printf( 
+                "%5lu MQTT: " ANSI_BRIGHT_GREEN "connected" ANSI_RESET 
+                " after " ANSI_BRIGHT_MAGENTA "%u" ANSI_RESET " ms\n", 
+                millis(), t_mqtt );
 
             mqttClient.subscribe( topic_ota.c_str() );
+            /*
             Serial.printf(
-                "%5ld MQTT: subscribed to " ANSI_BLUE "%s" ANSI_RESET "\n", 
+                "%5lu MQTT: subscribed to " ANSI_BLUE "%s" ANSI_RESET "\n", 
                 millis(), topic_ota.c_str() );
+            */
 
             mqttClient.subscribe( topic_config.c_str() );
+            /*
             Serial.printf(
-                "%5ld MQTT: subscribed to " ANSI_BLUE "%s" ANSI_RESET "\n", 
+                "%5lu MQTT: subscribed to " ANSI_BLUE "%s" ANSI_RESET "\n", 
                 millis(), topic_config.c_str() );
+            */
 
             return true;
     	} else {
@@ -449,13 +476,15 @@ void mqttPublish( const char* subtopic, const char* message, bool retain=false )
     mqttReconnect();
 	if (mqttClient.publish(topic.c_str(), message, (boolean)retain)) {
         Serial.printf(
-            "%5ld MQTT: publish '" ANSI_BLUE "%s" ANSI_RESET "' = \n"
+            "%5lu MQTT: publish '" ANSI_BLUE "%s" ANSI_RESET "' = \n"
             "'" ANSI_BLUE "%s" ANSI_RESET "'\r\n", 
-            millis(), topic.c_str(), message);
+            millis(), topic.c_str(), message ? message : "NULL" );
 	} else {
 		Serial.print("MQTT: publish " ANSI_BRIGHT_RED "fail" ANSI_RESET "\n");
 	}
-    yield(); mqttClient.loop(); yield();
+
+    //yield(); mqttClient.loop(); yield();
+    active_wait(10);
 }
 
 
@@ -465,7 +494,7 @@ void mqttPublish( const char* subtopic, const char* message, bool retain=false )
 void mqttPublishDebug()
 {
     const char* json = debug_to_json();
-    mqttPublish("debug",json,true);
+    mqttPublish(SUBTOPIC_INFO,json,true);
 }
 
 
@@ -476,7 +505,7 @@ void mqttPublishDebug()
 void mqttPublishState()
 {
     const char* json = state_to_json();
-    mqttPublish("state",json);
+    mqttPublish(SUBTOPIC_DATA,json);
 }
 
 
@@ -496,19 +525,25 @@ void mqttPublishWifi()
  */
 void mqttSetup()
 {
+    uint32_t t_begin, t_end;
+
     // had some issues with slow DNS response. now doing DNS lookup as a separate step
-    Serial.printf("%5ld MQTT: DNS lookup\n",millis());
     IPAddress ip;
+    t_begin = millis();
     int ret = WiFi.hostByName(MQTT_BROKER, ip);
     while (1 != ret) {
         Serial.printf("%5ld failed DNS lookup, error %d\n",millis(),ret);
         delay(100);
         ret = WiFi.hostByName(MQTT_BROKER, ip);
     }
-    Serial.printf("%5ld MQTT: broker " 
+    t_end = millis();
+    t_dns = t_end - t_begin;
+
+    Serial.printf("%5lu DNS: broker " 
         ANSI_BLUE "%s" ANSI_RESET " is " 
-        ANSI_BOLD "%s" ANSI_RESET "\n",
-        millis(), MQTT_BROKER, ip.toString().c_str());
+        ANSI_BLUE "%s" ANSI_RESET 
+        " took " ANSI_BRIGHT_MAGENTA "%u" ANSI_RESET " ms\n",
+        millis(), MQTT_BROKER, ip.toString().c_str(), t_dns );
     mqttClient.setServer(ip, 1883);
     mqttClient.setCallback(subscribeCallback);
     mqttReconnect();
@@ -538,7 +573,7 @@ int sorter(const void *cmp1, const void *cmp2)
  * @param pin   ESP32 pin number
  * @return unsigned   measured voltage in millivolts
  */
-unsigned measureSensor( int pin )
+unsigned readSensor( int pin )
 {
     unsigned voltage;
     const unsigned NSAMPLES = 20;
@@ -555,9 +590,76 @@ unsigned measureSensor( int pin )
     unsigned sum=0;
     for (int i=1; i<NSAMPLES-1; i++)
         sum += samples[i];
-    voltage = sum/ (NSAMPLES-2);
+    voltage = sum / (NSAMPLES-2);
 
     return voltage;
+}
+
+
+/**
+ * @brief take measurement for a single sensor, store result in global vars
+ * 
+ * @param ch logical channel no [0..3]
+ */
+void measureSensor( int ch )
+{
+    unsigned voltage = readSensor(pins_sensor[ch]);
+    sensor_abs[ch] = voltage;
+    Serial.printf("%d ",pins_sensor[ch]);
+
+    SensorRange& r = ranges[ch];
+    if (voltage < ALMOST_ZERO_MV) {
+        r.valid = false;
+        r.vmin = ADC_RANGE_MV;
+        r.vmax = 0;
+    } else {
+        if (voltage > r.vmax)
+            r.vmax = voltage;
+        if (voltage < r.vmin)
+            r.vmin = voltage;
+        r.valid = 
+            ((r.vmax - r.vmin) > MIN_SENSOR_DYNAMIC_RANGE)
+            && (r.vmin < ADC_RANGE_MV)
+            && (r.vmax > 0)
+            ;
+    }
+
+    sensor_rel[ch] = (r.valid) ? 1000 - (1000 * (voltage-r.vmin) / (r.vmax-r.vmin)) : -1;
+}
+
+
+/**
+ * @brief Turn ON power for all 4 sensors
+ * 
+ */
+void powerSensors()
+{
+    Serial.printf("%5ld SENSOR: power-up, ",millis() );
+    for (auto pin : pins_power) {
+        pinMode( pin, OUTPUT );
+        digitalWrite( pin, HIGH );
+        Serial.printf("%d ",pin);
+    }
+    Serial.println();
+}
+
+
+/**
+ * @brief Turn OFF power for all 4 sensors
+ * 
+ */
+void poweroffSensors()
+{
+    Serial.printf("\n%5ld SENSOR: power down sensors ",millis() );
+    for (int pin : pins_power) {
+        digitalWrite( pin, LOW );
+    }
+    delay(10);
+    for (int pin : pins_power) {
+        pinMode(pin,INPUT);
+        Serial.printf("%d ",pin);
+    }
+    Serial.println();
 }
 
 //------------------------------------------------------------------------------
@@ -572,6 +674,8 @@ unsigned measureSensor( int pin )
  */
 void setup()
 {
+    uint32_t t_begin, t_end;
+
 //----- signal start of wake phase (oscilloscope trigger)
 #ifdef PIN_AWAKE
     pinMode( PIN_AWAKE, OUTPUT );
@@ -622,7 +726,22 @@ void setup()
     battery_mV = analogReadMilliVolts( PIN_BATTERY ) * (BAT_R1 + BAT_R2) / BAT_R2;
 #endif
 
+//----- power up the sensors ... they need some time to warm up, so do this before Wifi
+
+    unsigned long t_power = millis();
+    powerSensors();
+
 //----- report environment -----------------------------------------------------
+
+    Serial.printf( " Chip:" ANSI_BOLD "%s" ANSI_RESET, 
+        ESP.getChipModel() );
+    Serial.printf( " at " ANSI_BOLD "%d" ANSI_RESET "MHz",
+        (int)(esp_clk_cpu_freq()/1000000));
+    Serial.printf( "  Flash:" ANSI_BOLD "%d" ANSI_RESET "K", 
+        (int)(ESP.getFlashChipSize() / 1024));
+    Serial.printf( "  Core:" ANSI_BOLD "%s" ANSI_RESET, 
+        esp_get_idf_version() );
+    Serial.println();
 
     Serial.printf( "Reset: RTC=" ANSI_RED ANSI_BOLD "%d" ANSI_RESET, 
         rtc_reset_reason );
@@ -636,34 +755,36 @@ void setup()
         now_s, Uptime.c_str() );
     Serial.println();
 
-    Serial.printf( " Chip:" ANSI_BOLD "%s" ANSI_RESET, 
-        ESP.getChipModel() );
-    Serial.printf( " at " ANSI_BOLD "%d" ANSI_RESET "MHz",
-        (int)(esp_clk_cpu_freq()/1000000));
-    Serial.printf( "  Flash:" ANSI_BOLD "%d" ANSI_RESET "K", 
-        (int)(ESP.getFlashChipSize() / 1024));
-    Serial.printf( "  Core:" ANSI_BOLD "%s" ANSI_RESET, 
-        esp_get_idf_version() );
-    Serial.println();
+//----- measure sensors
 
-    yield();
-
-//----- power up the sensors ... they need some time to warm up, so do this before Wifi
-
-    unsigned long t_power = millis();
-    //Serial.printf("SENSOR: at %ld power up ",t_power);
-    Serial.printf("%5ld SENSOR: power-up, ",t_power);
-    for (auto pin : pins_power) {
-        pinMode( pin, OUTPUT );
-        digitalWrite( pin, HIGH );
-        Serial.printf("%d ",pin);
+    // wait for sensor power supply
+    Serial.printf("%5lu SENSOR: wait for power-up (%u ms)\n", millis(), SENSOR_RAMPUP_MS);
+    while ( (unsigned long)(millis()-t_power) < SENSOR_RAMPUP_MS ) {
+        delay(10);
     }
-    Serial.println();
+
+    if (!ignoreSensors) {   // ignore sensor readins for the first few minutes?
+        Serial.printf("%5lu SENSOR: range ", millis()); 
+        for (auto r : ranges ) Serial.printf(" %d:%d",r.vmin,r.vmax);
+        Serial.println();
+
+        Serial.printf("%5lu SENSOR: measure ",millis());
+        for (int i=0; i<NCHANNELS; i++) {
+            measureSensor(i);
+            //yield(); mqttClient.loop(); yield();  
+        }
+    } // if (!ignoreSensors)
+
+    poweroffSensors();
 
 //----- turn on Wifi -----------------------------------------------------------
 
     int wifiOk = setupWifi( !firstRun );
+#ifdef WIFI_DBM
+    esp_wifi_set_max_tx_power( WIFI_DBM * 4 );
+#else
     esp_wifi_set_max_tx_power(40); // 10 dBm
+#endif
 
 //----- do MQTT stuff ----------------------------------------------------------
 
@@ -673,6 +794,7 @@ void setup()
         mqttbase = "soil/" + hostname + "/";
 
         mqttSetup();
+
         if (firstRun)
             mqttPublish("version",VERSION, true);
         
@@ -685,84 +807,26 @@ void setup()
         } else {
             yield(); mqttClient.loop(); yield();
         }
+
         mqttPublishWifi();
 
-//----- measure sensors
-
-        if (!ignoreSensors) {   // ignore sensor readins for the first few minutes?
-            Serial.printf("%5ld SENSOR: wait for power-up, ",millis());
-
-            // wait for sensor power supply
-            mqttClient.loop(); yield();
-            while ( (unsigned long)(millis()-t_power) < SENSOR_RAMPUP_MS ) {
-                yield(); mqttClient.loop(); yield();
-                delay(50);
-            }
-            Serial.print("range:"); 
-            for (auto r : ranges ) Serial.printf(" %d:%d",r.vmin,r.vmax);
-            Serial.println();
-
-            Serial.printf("%5d SENSOR: measure ",millis());
-            for (int i=0; i<NCHANNELS; i++) {
-                yield(); mqttClient.loop(); yield();  
-
-                //unsigned voltage = analogReadMilliVolts(pins_sensor[i]);
-                unsigned voltage = measureSensor(pins_sensor[i]);
-
-                sensor_abs[i] = voltage;
-                Serial.printf("%d ",pins_sensor[i]);
-                SensorRange& r = ranges[i];
-                if (voltage < ALMOST_ZERO_MV) {
-                    r.valid = false;
-                    r.vmin = ADC_RANGE_MV;
-                    r.vmax = 0;
-                } else {
-                    if (voltage > r.vmax)
-                        r.vmax = voltage;
-                    if (voltage < r.vmin)
-                        r.vmin = voltage;
-                    r.valid = 
-                        ((r.vmax - r.vmin) > MIN_SENSOR_DYNAMIC_RANGE)
-                        && (r.vmin < ADC_RANGE_MV)
-                        && (r.vmax > 0)
-                        ;
-                }
-                if (r.valid) {
-                    sensor_rel[i] = 1000 - (1000 * (voltage - r.vmin) / (r.vmax - r.vmin));
-                } else {
-                    sensor_rel[i] = -1;
-                }
-                yield(); mqttClient.loop(); yield();
-            }
-        } // if (!ignoreSensors)
-        
-        //----- turn off power to sensors
-
-        Serial.printf("\n%5ld SENSOR: power down sensors ",millis());
-        for (int pin : pins_power) {
-            digitalWrite( pin, LOW );
+        if (!ignoreSensors) {   // ignore sensor readings for the first few minutes?
+            mqttPublishState();
         }
-        delay(10);
-        for (int pin : pins_power) {
-            pinMode(pin,INPUT);
-            Serial.printf("%d ",pin);
-        }
-        Serial.println();
-
-        mqttPublishState();
-
-        delay(100); yield(); mqttClient.loop(); yield();
 
         if (config_changed) {
-            mqttClient.publish( topic_config.c_str(), NULL, (boolean)true );
-            yield(); mqttClient.loop(); yield();
+            mqttPublish( SUBTOPIC_CONFIG, NULL, true );
+            active_wait(100);
         }
 
         if (request_ota) {
-            mqttPublish("ota","OFF",true);
+            mqttPublish( SUBTOPIC_OTA, NULL, true );
+            active_wait(100);
             setupOTA(); 
         }
+
         mqttClient.disconnect();
+        active_wait(10);
     }
 
 //----- wrap up basic setup ----------------------------------------------------
@@ -778,15 +842,21 @@ void setup()
         return;
     }
 
-    Serial.flush();
-    yield();
+//    Serial.flush();
+//    yield();
 
 //----- now enter deep sleep ---------------------------------------------------
 
     // turn off Wifi 
-    WiFi.disconnect();
+    t_begin = millis();
+    WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
     yield();
+    t_end = millis();
+    uint32_t t_disconnect_dur = t_end - t_begin;
+    Serial.printf(
+        "\nWifi disconnect took " ANSI_BRIGHT_MAGENTA "%u" ANSI_RESET " ms\n", t_disconnect_dur
+    );
 
     uint32_t t_setup_end = millis();
     wake_duration = t_setup_end - t_setup_start;

@@ -4,7 +4,7 @@
  * Created		: 9-Feb-2020
  * Tabsize		: 4
  * 
- * This Revision: $Id: MyWifi.cpp 1618 2024-08-05 08:57:51Z  $
+ * This Revision: $Id: MyWifi.cpp 1623 2024-08-09 14:18:24Z  $
  */
 
 /*
@@ -32,18 +32,15 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
-#include <ArduinoJSON.h>        // MIT license, https://github.com/bblanchon/ArduinoJson
+#include <ArduinoJSON.h>  // MIT license, https://github.com/bblanchon/ArduinoJson
 
 #include "MyWifi.h"
 #include "myauth.h" // defines WIFI_SSID, WIFI_PASSWORD
 #include "ansi.h"
 
-
 //----- constants and preferences
 
-#define WIFI_CONFIG_VERSION 100
-
-// allow automatic connection to Wifi AP on power up ?
+/// allow automatic connection to Wifi AP on power up ?
 const bool AUTOCONNECT = false;
 
 //----- external references
@@ -56,13 +53,12 @@ extern HardwareSerial DebugSerial;
 
 WiFiClient wifiClient;
 
-// keep in ESP32 "RTC memory"
 RTC_DATA_ATTR WifiState wifiState;
 
-static unsigned t_setup = 0;    // filled by setupWifi()
+static unsigned t_wifi_setup = 0;    // filled by setupWifi()
 
 enum connect_t { error=0, autoconnect, reconnect, freshconnect };
-static connect_t connected = connect_t::error;       // filled by setupWifi()
+static connect_t connectMode = connect_t::error;       // filled by setupWifi()
 
 //----------------------------------------------------------------------------
 
@@ -77,23 +73,23 @@ const char* iptoa( const IPAddress& ip )
 
 /**
  * @brief Fill WiFi config struct (for RTC RAM) with currect WiFi parameters.
- * 
- * @param pState  points to WiFi parameters struct to be filled
  */
 static void _fillConfig()
 {
     wifiState.channel = WiFi.channel();           
-    memcpy( wifiState.bssid, WiFi.BSSID(), 6 );
+    memcpy( wifiState.bssid, WiFi.BSSID(), sizeof(wifiState.bssid) );
     wifiState.ip = WiFi.localIP();
     wifiState.gateway = WiFi.gatewayIP();
     wifiState.subnet = WiFi.subnetMask();
     wifiState.dns = WiFi.dnsIP();
     wifiState.make_valid();
-    yield();
 }
 
 //----------------------------------------------------------------------------
 
+/**
+ * @brief Print current Wifi connection parameters to debug console
+ */
 static void _printConfig() 
 {
     Serial.print( ANSI_WHITE );
@@ -105,7 +101,6 @@ static void _printConfig()
     Serial.printf("  Subnet  : %s", iptoa(wifiState.subnet) ); 
     Serial.printf("\t\tDNS     : %s\n", iptoa(wifiState.dns) ); 
 
-    //----- report MAC address
     uint8_t mac[6];
     WiFi.macAddress(mac);
     Serial.printf("  MAC %02X:%02X:%02X:%02X:%02X:%02X\n",
@@ -119,13 +114,10 @@ static void _printConfig()
 /**
  * @brief Create JSON report with Wifi performance parameters
  * 
- * @param msgbuf  string buffer to be filled
- * @param msglen  length of string buffer
+ * @param doc  reference to JSON object to add to
  */
-void reportWifi( char* msgbuf, size_t msglen )
+void reportWifi( JsonDocument& doc )
 {
-    JsonDocument doc;
-
     int dBm = WiFi.RSSI();        // in dBm
     int quality;
     if (dBm <= -100) {
@@ -138,10 +130,8 @@ void reportWifi( char* msgbuf, size_t msglen )
 
     doc["ch"] = wifiState.channel;   
     doc["RSSI"] = quality;
-    doc["dur"] = t_setup;
-    doc["connect"] = (int)connected;
-
-    serializeJson(doc,msgbuf,msglen);
+    doc["ttc"] = t_wifi_setup;      // time to connect [ms]
+    doc["mode"] = (int)connectMode;
 }
 
 //----------------------------------------------------------------------------
@@ -165,23 +155,23 @@ void onWiFiEvent(WiFiEvent_t event) {
         case ARDUINO_EVENT_WIFI_STA_STOP:
             Serial.print("stop ");
             break;
-
     }    
 }
+
+//----------------------------------------------------------------------------
 
 /**
  * @brief Try to re-connect to same WiFi AP as before.
  * 
- * @param   cb   callback function or none, will be called once
  * @return  true if connection was successful, else app should try _freshConnect
  */
-static bool _reconnectWifi( void (*cb)(void) )
+static bool _reconnectWifi()
 {
     const uint32_t timeout = 5000;      // 5 seconds
     uint32_t t1, t2;
     int wfs;
 
-    Serial.printf("try to re-connect ch=%d ... ", wifiState.channel);
+    Serial.printf("try to re-connect ch=%d, ", wifiState.channel);
     uint32_t t_start = millis();
 
     WiFi.onEvent(onWiFiEvent);
@@ -190,11 +180,7 @@ static bool _reconnectWifi( void (*cb)(void) )
 
     t1 = millis();
 
-    //delay(100); // was 200
-    if (cb) cb();
-
     while( (wfs=WiFi.status()) != WL_CONNECTED ) {
-        Serial.print(".");
     
         if (wfs == WL_CONNECT_FAILED) {
             Serial.println("Failed to connect");
@@ -209,10 +195,11 @@ static bool _reconnectWifi( void (*cb)(void) )
         }
 
         delay(50);
+        Serial.print("+");
     }
     
     t2 = millis();
-    Serial.printf(" wait:%u ms ", (unsigned)(t2-t1));
+    Serial.printf(" wait: %u ms ", (unsigned)(t2-t1));
 
     return true;
 }
@@ -231,7 +218,7 @@ static bool _freshConnectWifi()
     wl_status_t ws;
     unsigned t;
 
-    Serial.printf("\nfresh connect, SSID='%s' pw='****'\n",WIFI_SSID);
+    Serial.printf("\nfresh connect, SSID='%s'\n",WIFI_SSID);
     uint32_t t_start = millis();
 
     WiFi.begin( WIFI_SSID, WIFI_PASSWORD );
@@ -252,10 +239,10 @@ static bool _freshConnectWifi()
     }
     yield();
     if (WiFi.isConnected()) {
-        Serial.print(" ok ...");
+        Serial.print(" ok ");
         return true;
     } else {
-        Serial.printf("Wifi connect failed, status=%d ... ",WiFi.status());
+        Serial.printf("Wifi connect failed, status=%d ",WiFi.status());
         return false;
     }
 }
@@ -268,22 +255,18 @@ static bool _freshConnectWifi()
  * 
  * @param allow_reconnect   if true, first try to reconnect using info in 
  *                          saved settings
- * @param cb                callback function, called while waiting for WiFi to 
- *                          connect. This function is guaranteed to be called 
- *                          exactly once, independent of the success of the WiFi 
- *                          connection
  * @return 1  if automatic reconnection was successful
  * @return 2  if reconnection was successful
  * @return 3  if fresh connection was successful
   * @return 0  if reconnect and fresh connect failed
  */
-int setupWifi( bool allow_reconnect, void (*cb)(void) )
+int setupWifi( bool allow_reconnect )
 {
-    connected = connect_t::error;
+    connectMode = connect_t::error;
     bool isValid = wifiState.is_valid();
     allow_reconnect = isValid && allow_reconnect;
 
-    Serial.printf("Wifi: config is %s valid, try to connect ... ", 
+    Serial.printf("Wifi: config is %s valid, try to connect, ", 
         isValid ? "" : 
         ANSI_RED "not" ANSI_RESET 
         );
@@ -296,44 +279,45 @@ int setupWifi( bool allow_reconnect, void (*cb)(void) )
     yield();
 
     if (allow_reconnect) {
+//----- 1. check if Wifi has already been connected in the background
         if (AUTOCONNECT && (WiFi.waitForConnectResult(300) == WL_CONNECTED)) {
-            Serial.print("already connected ... ");
-            connected = connect_t::autoconnect;
-            if (cb) cb();
+            Serial.print("already connected ");
+            connectMode = connect_t::autoconnect;
         } else if (isValid) {
-            connected = _reconnectWifi( cb ) ? connect_t::reconnect : connect_t::error;
+//----- 2. if not, then try to re-connect using saved parameters, if available
+            connectMode = _reconnectWifi() ? connect_t::reconnect : connect_t::error;
         }
     }
-    if (!connected) {
-        connected = _freshConnectWifi() ? connect_t::freshconnect : connect_t::error;
-        if (cb) cb();
-        if (connected) _fillConfig();
+    if (!connectMode) {
+//----- 3. if all else has failed, let's try a fresh connection using SSID and password
+        connectMode = _freshConnectWifi() ? connect_t::freshconnect : connect_t::error;
     }
 
     uint32_t t_stop = millis();
-    t_setup = t_stop - t_start;
+    t_wifi_setup = t_stop - t_start;
 
-    if (connected) {
+    if (connectMode != connect_t::error) {
         Serial.print( ANSI_BRIGHT_GREEN "\nWifi is connected." ANSI_RESET );
-        Serial.printf(" mode %d, time to connect %u ms\n", (int)connected, t_setup );
+        Serial.printf(
+            " mode %d, took " ANSI_BRIGHT_MAGENTA "%u" ANSI_RESET " ms\n", 
+            (int)connectMode, t_wifi_setup );
     } else {
         Serial.print( ANSI_BRIGHT_RED "\nWifi is NOT connected." ANSI_RESET );
+        return connect_t::error;
     }
 
-    //_printConfig();
-
-    if (!connected) 
-        return false;
-
+    // default hostname is esp32-ABCDEF, where AB CD EF are last 3 bytes of MAC address
+    // if you want a different hostname, define MY_HOSTNAME in platformio.ini
 #ifdef MY_HOSTNAME
     Serial.printf("  hostname='%s'  ",MY_HOSTNAME);
     WiFi.setHostname(MY_HOSTNAME);
 #endif
 
-    _fillConfig();
-    return int(connected);
+    _fillConfig();  // remember successful connection parameters
+    return int(connectMode);
 }
 
+//----------------------------------------------------------------------------
 
 /**
  * @brief Refresh WiFi connection if necessary
@@ -351,6 +335,7 @@ bool loopWifi()
     return false;
 }
 
+//----------------------------------------------------------------------------
 
 static uint32_t _crc32( uint32_t crc, uint8_t by )
 {

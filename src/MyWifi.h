@@ -5,7 +5,7 @@
  * Created		: 9-Feb-2020
  * Tabsize		: 4
  * 
- * This Revision: $Id: MyWifi.h 1617 2024-08-03 11:32:34Z  $
+ * This Revision: $Id: MyWifi.h 1623 2024-08-09 14:18:24Z  $
  */
 
 /*
@@ -29,7 +29,6 @@ extern WiFiClient wifiClient;
  */
 struct WifiState {
    uint32_t crc32;
-   uint32_t version;
    uint32_t ip;
    uint32_t gateway;
    uint32_t subnet;
@@ -43,24 +42,23 @@ struct WifiState {
          &&  (subnet == other.subnet)
          &&  (dns == other.dns)
          &&  (channel == other.channel)
-         &&  (version == other.version)
          ;
    }
 
    static uint32_t calculateCRC32( const uint8_t *data, size_t length );
 
    bool is_valid() {
-       return crc32 == calculateCRC32( ((uint8_t *)&(this->version)), sizeof(*this)-sizeof(crc32)) ;
+       return crc32 == calculateCRC32( ((uint8_t *)&(this->ip)), sizeof(*this)-sizeof(crc32)) ;
    }
 
    void make_valid() {
-       crc32 = calculateCRC32( ((uint8_t *)&(this->version)), sizeof(*this)-sizeof(crc32)) ;
+       crc32 = calculateCRC32( ((uint8_t *)&(this->ip)), sizeof(*this)-sizeof(crc32)) ;
    }
 };
 
 
-int setupWifi( bool allow_reconnect=true, void (*cb)(void)=NULL );
+int setupWifi( bool allow_reconnect=true );
 bool loopWifi();
-void reportWifi( char* buf, size_t buflen );
+void reportWifi( JsonDocument& doc );
 
 #endif // _WIFI_H

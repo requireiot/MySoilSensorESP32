@@ -6,49 +6,90 @@ This is part of my home automation setup. For details, see my [blog](https://req
 
 - [MySoilSensorESP32 -- a multi-channel soil moisture sensor with long battery life](#mysoilsensoresp32----a-multi-channel-soil-moisture-sensor-with-long-battery-life)
 - [Objective](#objective)
-- [Architecture](#architecture)
 - [Design decisions](#design-decisions)
-  - [Wifi vs. NRF24](#wifi-vs-nrf24)
   - [How to make it waterproof-ish](#how-to-make-it-waterproof-ish)
-- [Build instructions](#build-instructions)
+  - [How to communicate](#how-to-communicate)
+  - [Minimize power consumption](#minimize-power-consumption)
+- [Building blocks](#building-blocks)
+- [Hardware](#hardware)
+- [Firmware](#firmware)
 - [MQTT messages](#mqtt-messages)
 - [Over-the-air update](#over-the-air-update)
 - [Power consumption and battery life](#power-consumption-and-battery-life)
-  - [Power saving considerations](#power-saving-considerations)
   - [Wake time](#wake-time)
   - [Actual power consumption](#actual-power-consumption)
+- [Analog-to-digital conversion with the ESP32](#analog-to-digital-conversion-with-the-esp32)
+- [Lessons learned](#lessons-learned)
+  - [Outside my control](#outside-my-control)
+  - [Almost easy](#almost-easy)
 
 
 ## Objective
-In summer, I have a lot of potted plants out on the balcony, and need to know when to water them. Indoors, I have mostly home automation gadgets based on MySensors, but out on the balcony the signal is too weak, so I needed something Wifi-based, but without the high battery consumption typical of Wifi solutions.
-
-## Architecture
-- an ESP32 module with custom software
-- two AA or AAA batteries, which should last for more than a year
-- up to 4 cheap capacitive soil sensors, of the kind you find at Aliexpress for under a Euro
-- my home network, with a DHCP server assigning pseudo-static IP addresses to everybody (based on MAC address)
-- my home automation system, with an MQTT broker and OpenHAB for visualization and control
+In summer, I have a lot of potted plants out on the balcony, and need to know when 
+to water them. Indoors, most of my home automation gadgets are based on MySensors, 
+but out on the balcony the signal is too weak, so I needed something Wifi-based, 
+but without the high battery consumption typical of Wifi solutions.
 
 ## Design decisions
 
-### Wifi vs. NRF24
-
-Most of my home automation stuff is built around NRF24 modules and the [MySensors](https://www.mysensors.org/) ecosystem, but I was having difficulties with reliable communication between the sensors on the balcony and the hub indoors, so I opted for Wifi this time. Also, having TCP/IP avaialble made it easier to do all communication via an MQTT broker.
-
 ### How to make it waterproof-ish
 
-There will be rain out on the balcony, so the modules need to be waterproof-ish. Real waterproof sealed cases are expensive, so I opted for a cheap plastic case with a ziploc bag over it, with teh opening facing down ... good enough for the intended usecase.
+There will be rain out on the balcony, so the modules need to be waterproof-ish. 
+Real waterproof sealed cases are expensive, so I opted for a cheap plastic case 
+with a Ziploc bag over it, with the opening facing down ... good enough for the 
+intended use case.
 
-## Build instructions
+### How to communicate
+
+To exchange information between the soil sensors and the home automation system 
+(soil moisture and performance characteristics from the device, commands to 
+change operating parameters or start over-the-air updates to the device), 
+I could think of the following technologies:
+1. MQTT. *Pro*: I alreeady have an MQTT broker running, and this is independent 
+   of a specific home automation system. *Con*: Communication is a bit unpredictable, 
+   as I found out
+2. HTTP requests to a REST API, e.g. for OpenHAB. *Pro*: More deterministic, you 
+   know exactly when a message has been accepted. *Con*: Specific for one home automation system
+
+I went for (1).
+
+### Minimize power consumption
+
+- a bare ESP32-WROOM module is better than a development module -- probably due 
+  to the voltage regulators and USB interfaces on those modules. Power 
+  consumption during deep sleep, with a bare ESP32-WROOM, powered from 2x 
+  AAA battery, is **14µA**.
+- to avoid any power loss through a voltage regulator, I am running the ESP32 
+  directly from a pair of AAA batteries. Newer processors will work down to 2.3V, 
+  I just had to make sure the soil moisture sensor also works below 3V (see below)
+- the soil sensors are *powered* by GPIO pins, which are turned off during sleep
+- to minimize the time the processor is awake, and in particular the time that 
+  WiFi is active, I try to reconnect to WiFi using previously established SSID, 
+  IP address and channel number, which are cached in RTC memory
+
+## Building blocks
+- an ESP32 module with custom Arduino-based software
+- two AAA batteries, which should last for more than a year
+- up to 4 cheap capacitive soil sensors, of the kind you find at Aliexpress for 
+  less than a Euro
+- my home network, with a DHCP server assigning pseudo-static IP addresses to 
+  everybody, based on MAC address
+- my home automation system, with an MQTT broker and OpenHAB for visualization 
+  and control
+
+## Hardware
 
 <img src="pictures/open-case.jpg" width="400" /> <img src="pictures/board-bottom.jpg" width="400" />
 
-The hardware is very simple, see the [schematic](hardware/MySoilSensorESP32.pdf). 
+The hardware is very simple, see the [schematic](hardware/MySoilSensorESP32.pdf) 
+and the pictures above. 
 
 For development and debugging, I added pin connectors to connect to FTDI-232 style 
 USB-to-serial interfaces, one for the primary UART (for firmware upload) and one 
 for UART#2, where the software outputs logging messages. For a production system, 
 this is not necessary and can be left out, of course.
+
+## Firmware
 
 The software was developed using [Platformio](https://platformio.org/). Just 
 download the repository contents into an empty folder, and open that folder as 
@@ -69,64 +110,121 @@ RJ12 6P4C connecter on the module end, for easy connection "in the field".
 The capacitive soil sensors commonly available on Aliexpress or Amazon mostly use 
 an NE555 chip that only works down to 3.0V, whereas the ESP32 itself will still 
 work when the battery voltage is as low as 2.5V, so I replaced the NMOS NE555 
-with the CMOS version ILC555D, which work down to 2.0V.
+with the CMOS version ILC555D, which work down to 2.0V. I also bypassed the voltage
+regulator on the sensor board.
 
 ## MQTT messages
 
-The device publishes to an MQTT topic that includes its own hostname:
-- to <code>soil/__hostname__/debug</code> it publishes a JSON string with various internal parameters, such as battery voltage, Wifi quality, uptime etc., once every 12 hours
-- to <code>soil/__hostname__/state</code> it publishes a JSON string with measurement results, once every hour 
-- it subscribes to <code>soil/__hostname__/ota</code> to enable over-the-air updates (see below)
+The device publishes to MQTT topics that include its own hostname:
+- to <code>soil/__hostname__/debug</code> it publishes a JSON string with various 
+  internal parameters, such as battery voltage, uptime etc., once every 12 hours
+- to <code>soil/__hostname__/state</code> it publishes a JSON string with
+   measurement results, once every hour 
+- to <code>soil/__hostname__/wifi</code> it publishes a JSON string with some 
+  performance metrics, such as Wifi quality, the time needed to connect to the 
+  Wifi access point, etc., once every hour 
+- it subscribes to <code>soil/__hostname__/ota</code> to enable over-the-air 
+  updates (see below)
+- it subscribes to <code>soil/__hostname__/config</code> to receive a JSON-format 
+  string enable to change some operating parameters (see source code for details)
 
-For example, my device has the hostname `esp32-D80270`, so it will publish to `soil/esp32-D80270/state` etc.
+For example, my device has the hostname `esp32-D80270`, so it will publish to 
+`soil/esp32-D80270/state` etc.
 
 ## Over-the-air update
 
 The device supports OTA firmware updates, despite the fact that it is in deep 
-sleep most of the time. How? When it wakes up, it subscribes MQTT topic 
+sleep most of the time. How? When it wakes up, it subscribes to MQTT topic 
 <code>soil/__hostname__/ota</code> (see above), and if it finds a retained message 
-with the payload of `1`or `ON`, it will enable ArduinoOTA and wait for an upload 
-of new firmware, instead of going to sleep. It also changes the topic to `OFF`. 
+with the payload of `1` or `ON`, it enables ArduinoOTA and waits for an upload 
+of new firmware, instead of going to sleep. It also deletes the topic to 
+acknowledge that it has received the command. 
 
 To perform an OTA firmware update,
-1. compile your code for the target that has "-ota" in its name (look at `platformio.ini` and adjust the IP address or device hostname to match your conguration)
-1. publish a retained message for topic <code>soil/__hostname__/ota</code> with the payload of 'ON' For my device `esp32-D80270`, with my home automation server named `ha-server`, I run the following shell comand: <br> 
- `mosquitto_pub -h ha-server -r -t "soil/esp32-D80270/ota" -m "ON"`
-1. wait for the item to revert to OFF. I watch it with a tool like MQTT Explorer, or run this shell command repeatedly <br/> `mosquitto_sub -h ha-server -t "soil/esp32-D80270/ota"`  
+1. compile your code for the target that has "-ota" in its name (look at 
+   `platformio.ini` and adjust the IP address or device hostname to match your 
+   conguration)
+1. publish a retained message for topic <code>soil/__hostname__/ota</code> with 
+   the payload of 'ON' For my device `esp32-D80270`, I run the following shell 
+   comand on the home automation server: <br> 
+ `mosquitto_pub -r -t "soil/esp32-D80270/ota" -m "ON"`
+1. wait for the item to disappear. I watch it with a tool like 
+   [MQTT Explorer](https://mqtt-explorer.com/), or run this shell command 
+   repeatedly <br/> `mosquitto_sub -t "soil/esp32-D80270/ota"`  
 1. upload your firmware via Platformio
 
 ## Power consumption and battery life
 
-### Power saving considerations
-
-Minimize deep sleep power consumption:
-  - a bare ESP32-WROOM module is better than a development module -- probably due to the voltage regulator and USB interfaces on those modules
-  - if a voltage regulator is needed, then use a LDO voltage regulator with low quiescent current -- I found the HT7833 works well
-  - alternatively, power the device directly from two AA or AAA batteries -- in this case, you may need to modify the soil sensors as described above
-  - the soil sensors are *powered* by GPIO pins, which are turned off during sleep
-
-Minimize the duration of active Wifi during a wake period:
-  - try to reconnect to Wifi using previously established SSID, IP and channel number, which are cached in RTC memory
-
-Power consumption, during deep sleep, with a bare ESP32-WROOM, powered from 2x AAA battery is **14µA**.
-
 ### Wake time
 
-As explained above, the time the mdule stays awake each measurement cycle is important for overall power consumption, so I investigated the wake time in some detail.
+As explained above, the time the module stays awake each measurement cycle is 
+important for overall power consumption, so I investigated the wake time in some 
+detail.
 
-I build several of these units, so connected directly to the Wifi access point 
-( a AVM Fritzbox 7530), and some via a Wifi repeater (a Fritz Repeater 1200ax), 
-over a distance of 3-5m, through a massive outer brick wall ( or maybe through a window).
+I built several of these units, some connected directly to the Wifi access point 
+(a AVM Fritzbox 7530), and some via a Wifi repeater (a Fritz Repeater 1200ax), 
+over a distance of 3-5m, through a massive outer brick wall (or maybe through a 
+window).
 
 On average, the wake time is about **400 ms** for all units. Now and then, maybe 
-once or twice a day, the wake time is much larger, above **1000 ms**. This appears to happen mostly when the Wifi access point has switched to a adifferent Wifi channel. When I configured my access point to use a fixed Wifi channel, these long wake time events could no longer be observed,
+once or twice a day, the wake time is much larger, above **1000 ms**. This appears 
+to happen mostly when the Wifi access point has switched to a a different Wifi 
+channel. When I configured my access point to use a fixed Wifi channel, these 
+long wake time events could no longer be observed.
 
 ### Actual power consumption
 
 These factors contribute to power consumption or battery drain, 
 in decreasing order of importance:
-1. the self-discharge of the batteries, according to [[1]](http://www.gammon.com.au/power), 
-about 35 µA or **0.84 mAh** per day (for AAA batteries)
-2. wake time with WiFi on, up to 130 mA x ~400ms per wakeup every hour, or **0.39 mAh** per day
-3. deep sleep, at ~14 µA or **0.34 mAh** per day
-4. the voltage divider for battery monitoring, bringing the 3.0V or 4.5V battery voltage down to the 2.5V accepted by the ESP32 ADC, at 2x 470 kOhm, or **0.08 mAh** per day
+1. the self-discharge of the AAA batteries, according to [[1]](http://www.gammon.com.au/power), 
+about 35 µA or **0.84 mAh** per day 
+1. deep sleep, at ~14 µA or **0.34 mAh** per day
+1. wake time with WiFi ON, 130 mA x ~300ms per wakeup or **0.26 mAh** per day
+1. wake time, with WiFi OFF, 50 mA x ~300ms per wakeup or **0.10 mAh** per day
+
+We have brought the design to the point where overall power consumption is 
+dominated by the self-dischange of the Alkaline batteries, so there is no point 
+in attempting to further optimize the power consumption of the processor module.
+
+## Analog-to-digital conversion with the ESP32
+
+The ADC on the ESP32 module has a bad reputation, there are many websites and 
+forum posts that document its bad linearity and high noise level. For this 
+application, the inferior performance is acceptable, because we are not attempting 
+to make high precision measurements, just give an indication of "soil is ok" vs 
+"soil is too dry".
+
+## Lessons learned
+
+### Outside my control
+
+The performance of the device, in terms of power consumption or battery life, 
+depends of course on the design of the device itself and the design decisions I 
+made (processor, program flow, etc.), but also on external factors that I cannot 
+control. For example, power consumption depends on wake time, which is the 
+aggregate of
+* the time between turning on sensor power, and measuring the sensor voltage -- 
+  I chose *100ms*, which appears to be enough for the sensor voltage to settle
+* the time to re-connect to the Wifi access point, using stored information 
+  about WiFi channel, SSID etc -- this takes about *160ms* most of the time, 
+  but sometimes can take as much as 2-3s
+* the time to look up the IP address for the MQTT broker, usually *20-40ms*
+* the time to connect to the MQTT broker, mostly *30ms*, but sometimes up to 
+  *500ms*, which I can't explain
+* the time to send MQTT messages -- I can influence this, by deciding how much 
+  information to send
+* the time to disconnect from the Wifi access point -- mostly about *20ms*, 
+  but sometimes as high as *130ms*, which I can't explain
+
+### Almost easy
+
+I found it fairly easy to create a first version of the code that sort of worked 
+most of the time. Then I began to notice the rough edges, and it took a lot of 
+time to get those fixed:
+* *easy*: making measurements and reporting them via MQTT. *Harder*: get the 
+  measurements to be less jittery, and less affected by varying current 
+  consumption due to WiFi activity 
+* allow configuration changes via MQTT, and acknowledge the command by deleting 
+  the topic. *Easy*: get it to work most of the time, with occasional loss of a 
+  message. *Harder*: make it work every time, by inserting delays here and there, 
+  without a massive increase in the overall wake time
