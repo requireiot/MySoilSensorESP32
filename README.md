@@ -9,26 +9,30 @@ This is part of my home automation setup. For details, see my [blog](https://req
 - [Design decisions](#design-decisions)
   - [How to make it waterproof-ish](#how-to-make-it-waterproof-ish)
   - [How to communicate](#how-to-communicate)
+  - [Processor](#processor)
   - [Minimize power consumption](#minimize-power-consumption)
 - [Building blocks](#building-blocks)
 - [Hardware](#hardware)
 - [Firmware](#firmware)
 - [MQTT messages](#mqtt-messages)
 - [Over-the-air update](#over-the-air-update)
+- [Debugging support](#debugging-support)
 - [Power consumption and battery life](#power-consumption-and-battery-life)
   - [Wake time](#wake-time)
   - [Actual power consumption](#actual-power-consumption)
-- [Analog-to-digital conversion with the ESP32](#analog-to-digital-conversion-with-the-esp32)
 - [Lessons learned](#lessons-learned)
-  - [Outside my control](#outside-my-control)
-  - [Almost easy](#almost-easy)
+  - [Analog-to-digital conversion with the ESP32](#analog-to-digital-conversion-with-the-esp32)
+  - [Some things are outside of my control](#some-things-are-outside-of-my-control)
+  - [An almost easy project](#an-almost-easy-project)
+  - [Bad luck with channel 13](#bad-luck-with-channel-13)
 
 
 ## Objective
-In summer, I have a lot of potted plants out on the balcony, and need to know when 
-to water them. Indoors, most of my home automation gadgets are based on MySensors, 
-but out on the balcony the signal is too weak, so I needed something Wifi-based, 
-but without the high battery consumption typical of Wifi solutions.
+In summer, I have a lot of potted plants out on the balcony, and I need to know when 
+to water them. Indoors, most of my home automation gadgets are based on 
+[MySensors](https://www.mysensors.org/), but out on the balcony the signal is 
+too weak, so I needed something Wifi-based, but without the high battery 
+consumption typical of Wifi solutions.
 
 ## Design decisions
 
@@ -45,13 +49,30 @@ To exchange information between the soil sensors and the home automation system
 (soil moisture and performance characteristics from the device, commands to 
 change operating parameters or start over-the-air updates to the device), 
 I could think of the following technologies:
-1. MQTT. *Pro*: I alreeady have an MQTT broker running, and this is independent 
+1. **MQTT**. *Pro*: I alreeady have an MQTT broker running, and this is independent 
    of a specific home automation system. *Con*: Communication is a bit unpredictable, 
    as I found out
-2. HTTP requests to a REST API, e.g. for OpenHAB. *Pro*: More deterministic, you 
-   know exactly when a message has been accepted. *Con*: Specific for one home automation system
+2. **HTTP** requests to a REST API, e.g. for OpenHAB. *Pro*: More deterministic, 
+   you know exactly when a message has been accepted. *Con*: Specific for one 
+   home automation system
 
 I went for (1).
+
+### Processor
+
+The final design uses an ESP32-WROOM module. 
+
+I also tried a ESP32-C3 "Super Mini" module, the source code supports this. This 
+is a single core RISC-V based processor, with the following pros and cons, 
+compared to the ESP32:
+* *Pro*: lower current draw when WiFi is on, 50 mA vs 130 mA
+* *Pro*: easy to use the little development module in a production system, because 
+  it has no USB-serial chip that would consume power all the time, the ESP32-C3 
+  has builtin USB capability
+* *Con*: higher current draw during sleep, I measured about 40µA
+* *Con*: unreliable WiFi connection. This is probably a property of the *module* 
+  rather than the ESP32-C3 *chip*, because of the tiny antenna -- but that was a 
+  knockout criterion for me
 
 ### Minimize power consumption
 
@@ -70,7 +91,7 @@ I went for (1).
 ## Building blocks
 - an ESP32 module with custom Arduino-based software
 - two AAA batteries, which should last for more than a year
-- up to 4 cheap capacitive soil sensors, of the kind you find at Aliexpress for 
+- up to 4 cheap capacitive soil sensors, of the kind you find on Aliexpress for 
   less than a Euro
 - my home network, with a DHCP server assigning pseudo-static IP addresses to 
   everybody, based on MAC address
@@ -107,11 +128,11 @@ I used a 7x9 cm prototype board for ESP32 and ESP8266 boards, cut to fit inside
 a 100x60x25 mm plastic case. The soil sensors are connected via cables with an 
 RJ12 6P4C connecter on the module end, for easy connection "in the field".
 
-The capacitive soil sensors commonly available on Aliexpress or Amazon mostly use 
-an NE555 chip that only works down to 3.0V, whereas the ESP32 itself will still 
-work when the battery voltage is as low as 2.5V, so I replaced the NMOS NE555 
-with the CMOS version ILC555D, which work down to 2.0V. I also bypassed the voltage
-regulator on the sensor board.
+The capacitive soil sensors I got from Aliexpress had an NE555 chip that only 
+works down to 3.0V, whereas the ESP32 itself will still work when the battery 
+voltage is as low as 2.5V, so I replaced the NMOS NE555 with the CMOS version 
+ILC555D, which work down to 2.0V. I also bypassed the voltage regulator on the 
+sensor board.
 
 ## MQTT messages
 
@@ -153,6 +174,12 @@ To perform an OTA firmware update,
    repeatedly <br/> `mosquitto_sub -t "soil/esp32-D80270/ota"`  
 1. upload your firmware via Platformio
 
+## Debugging support
+
+The software prints a lot of logging messages to UART#2 (GPIO pins 16 and 17), 
+to which I connect an optically isolated FTDI-style USB to serial module. This 
+was really helpful for understanding what goes on, and where dekays occur.
+
 ## Power consumption and battery life
 
 ### Wake time
@@ -186,7 +213,9 @@ We have brought the design to the point where overall power consumption is
 dominated by the self-dischange of the Alkaline batteries, so there is no point 
 in attempting to further optimize the power consumption of the processor module.
 
-## Analog-to-digital conversion with the ESP32
+## Lessons learned
+
+### Analog-to-digital conversion with the ESP32
 
 The ADC on the ESP32 module has a bad reputation, there are many websites and 
 forum posts that document its bad linearity and high noise level. For this 
@@ -194,9 +223,7 @@ application, the inferior performance is acceptable, because we are not attempti
 to make high precision measurements, just give an indication of "soil is ok" vs 
 "soil is too dry".
 
-## Lessons learned
-
-### Outside my control
+### Some things are outside of my control
 
 The performance of the device, in terms of power consumption or battery life, 
 depends of course on the design of the device itself and the design decisions I 
@@ -216,7 +243,7 @@ aggregate of
 * the time to disconnect from the Wifi access point -- mostly about *20ms*, 
   but sometimes as high as *130ms*, which I can't explain
 
-### Almost easy
+### An almost easy project
 
 I found it fairly easy to create a first version of the code that sort of worked 
 most of the time. Then I began to notice the rough edges, and it took a lot of 
@@ -228,3 +255,9 @@ time to get those fixed:
   the topic. *Easy*: get it to work most of the time, with occasional loss of a 
   message. *Harder*: make it work every time, by inserting delays here and there, 
   without a massive increase in the overall wake time
+
+### Bad luck with channel 13
+
+When the WiFi router is set to channel 12 or 13, connection time is much higher 
+(>2000ms) than on WiFi channel 1-11 (200-300ms) ... didn't expect that, should 
+have read [this](https://olimex.wordpress.com/2021/12/10/avoid-wifi-channel-12-13-14-when-working-with-esp-devices/) before!

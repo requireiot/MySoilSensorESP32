@@ -65,14 +65,16 @@
     This supports ESP32 and ESP32C3 based boards
     - tested with ESP32-WROOM-32E
         platformio: board=esp32dev
-        conditional #ifdef ARDUINO_ESP32_DEV 
-        conditional #if CONFIG_IDF_TARGET_ESP32 
-        conditional #ifdef __XTENSA__
+      platform-specific code with any of these
+        #ifdef ARDUINO_ESP32_DEV 
+        #if CONFIG_IDF_TARGET_ESP32 
+        #ifdef __XTENSA__
     - WIP with ESP32C3 supermini, 
         platformio: board=lolin_c3_mini
-        conditional #ifdef ARDUINO_LOLIN_C3_MINI
-        conditional #if CONFIG_IDF_TARGET_ESP32C3 
-        conditional #ifdef __riscv
+      platform-specific code with any of these
+        #ifdef ARDUINO_LOLIN_C3_MINI
+        #if CONFIG_IDF_TARGET_ESP32C3 
+        #ifdef __riscv
 */
 
 #define BAT_R1 470  // from Vbat to ADC
@@ -99,37 +101,35 @@ const char VERSION[] = "$Id: MySoilSensorESP32.cpp 1623 2024-08-09 14:18:24Z  $"
 // measure voltage on which GPIO pins?
 
 #if CONFIG_IDF_TARGET_ESP32
-
  #define PIN_AWAKE 23    // show that we are awake, e.g. for oscilloscope trigger
  #define PIN_BATTERY 36  // ADC used to measure battery voltage. Arduino name: A0
 
-/// connect these GPIO to sensor outputs
+ /// connect these GPIO to sensor outputs
  const int pins_sensor[] = { 
     39,     // GPIO 39 = ADC1_3 = Arduino A3
     34,     // GPIO 34 = ADC1_6 = Arduino A6
     35,     // GPIO 35 = ADC1_7 = Arduino A7
     32      // GPIO 32 = ADC1_4 = Arduino A4
-//  33      // GPIO 33 = ADC1_5 = Arduino A5
+ //  33      // GPIO 33 = ADC1_5 = Arduino A5
     };   
 
-/// connect these GPIO to sensor VCC
+ /// connect these GPIO to sensor VCC
  const int pins_power[]  = { 
     25,     // GPIO 25=ADC2_8
     26,     // GPIO 26=ADC2_9
     27,     // GPIO 27=ADC2_7
     4       // GPIO 4=ADC2_0
-//  23,     //     
+ //  23,     //     
     };    
 #endif // CONFIG_IDF_TARGET_ESP32
 
 #if CONFIG_IDF_TARGET_ESP32C3
-
  #define PIN_AWAKE 7    // show that we are awake, e.g. for oscilloscope trigger
  #define PIN_BATTERY 0  // ADC used to measure battery voltage. Arduino name: A0
 
-/// connect these GPIO to sensor outputs
+ /// connect these GPIO to sensor outputs
  const int pins_sensor[] = { 1,2,3,4 }; // opt 5
-/// connect these GPIO to sensor VCC
+ /// connect these GPIO to sensor VCC
  const int pins_power[]  = { 10 }; 
 #endif // CONFIG_IDF_TARGET_ESP32C3
 

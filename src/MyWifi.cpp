@@ -33,6 +33,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <ArduinoJSON.h>  // MIT license, https://github.com/bblanchon/ArduinoJson
+#include <esp_wifi.h>
 
 #include "MyWifi.h"
 #include "myauth.h" // defines WIFI_SSID, WIFI_PASSWORD
