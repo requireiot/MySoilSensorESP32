@@ -31,8 +31,8 @@ This is part of my home automation setup. For details, see my [blog](https://req
 In summer, I have a lot of potted plants out on the balcony, and I need to know when 
 to water them. Indoors, most of my home automation gadgets are based on 
 [MySensors](https://www.mysensors.org/), but out on the balcony the signal is 
-too weak, so I needed something Wifi-based, but without the high battery 
-consumption typical of Wifi solutions.
+too weak, so I needed something WiFi-based, but without the high battery 
+consumption typical of WiFi solutions.
 
 ## Design decisions
 

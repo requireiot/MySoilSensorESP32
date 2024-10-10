@@ -4,7 +4,7 @@
  * Created		: 9-Feb-2020
  * Tabsize		: 4
  * 
- * This Revision: $Id: MyWifi.cpp 1623 2024-08-09 14:18:24Z  $
+ * This Revision: $Id: MyWifi.cpp 1635 2024-10-10 10:09:14Z  $
  */
 
 /*
@@ -93,7 +93,7 @@ static void _fillConfig()
  */
 static void _printConfig() 
 {
-    Serial.print( ANSI_WHITE );
+    Serial.print( "\n" ANSI_WHITE );
     Serial.print("  BSSID   : ");
     for (int i=0; i<6; i++) Serial.printf("%02X ", wifiState.bssid[i]);
     Serial.printf("\tChannel : %d\n", wifiState.channel ); 
@@ -267,6 +267,8 @@ int setupWifi( bool allow_reconnect )
     bool isValid = wifiState.is_valid();
     allow_reconnect = isValid && allow_reconnect;
 
+    //_printConfig();
+
     Serial.printf("Wifi: config is %s valid, try to connect, ", 
         isValid ? "" : 
         ANSI_RED "not" ANSI_RESET 
@@ -315,6 +317,7 @@ int setupWifi( bool allow_reconnect )
 #endif
 
     _fillConfig();  // remember successful connection parameters
+    _printConfig();
     return int(connectMode);
 }
 

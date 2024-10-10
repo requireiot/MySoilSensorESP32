@@ -5,7 +5,7 @@
  * Created		: 14-May-2024
  * Tabsize		: 4
  * 
- * This Revision: $Id: MySoilSensorESP32.cpp 1623 2024-08-09 14:18:24Z  $
+ * This Revision: $Id: MySoilSensorESP32.cpp 1635 2024-10-10 10:09:14Z  $
  */
 
 /*
@@ -94,8 +94,7 @@
 
 
 /// version string published at startup.
-const char VERSION[] = "$Id: MySoilSensorESP32.cpp 1623 2024-08-09 14:18:24Z  $";
-
+const char VERSION[] = "$Id: MySoilSensorESP32.cpp 1635 2024-10-10 10:09:14Z  $ " __DATE__ " " __TIME__;
 /*                      1...5...10....5...20....5...30....5...40...5...50 */
 
 // measure voltage on which GPIO pins?
@@ -126,8 +125,9 @@ const char VERSION[] = "$Id: MySoilSensorESP32.cpp 1623 2024-08-09 14:18:24Z  $"
 #if CONFIG_IDF_TARGET_ESP32C3
  #define PIN_AWAKE 7    // show that we are awake, e.g. for oscilloscope trigger
  #define PIN_BATTERY 0  // ADC used to measure battery voltage. Arduino name: A0
+ #define PIN_LED 8
 
- /// connect these GPIO to sensor outputs
+  /// connect these GPIO to sensor outputs
  const int pins_sensor[] = { 1,2,3,4 }; // opt 5
  /// connect these GPIO to sensor VCC
  const int pins_power[]  = { 10 }; 
@@ -240,6 +240,7 @@ RTC_DATA_ATTR uint64_t bootCount;       ///< count # of times we have woken up f
 RTC_DATA_ATTR time_t lastDebugReport_s; ///< time is s of last time battery etc was reported
 // how long were we awake? Remember in RTC memory and report next time
 RTC_DATA_ATTR unsigned wake_duration;
+RTC_DATA_ATTR unsigned disconnect_duration;
 
 //----- measurements
 int sensor_abs[NCHANNELS];  ///< absolute measurements of sensor output, in mV
@@ -332,6 +333,9 @@ const char* state_to_json()
     }
     if (wake_duration)
         doc["wake"] = wake_duration;
+
+    if (disconnect_duration)
+        doc["dis"] = disconnect_duration;
 
     serializeJson(doc,msgbuf);
     return msgbuf;
@@ -682,6 +686,13 @@ void setup()
     digitalWrite( PIN_AWAKE, HIGH );
 #endif
 
+#if CONFIG_IDF_TARGET_ESP32C3
+ #ifdef PIN_LED
+    pinMode( PIN_LED, OUTPUT );
+    digitalWrite( PIN_LED, LOW );
+ #endif // PIN_LED
+#endif
+
   	int rtc_reset_reason = rtc_get_reset_reason(0); 
 
     if ((config.signature != SIGNATURE) || (rtc_reset_reason != DEEPSLEEP_RESET))
@@ -713,6 +724,7 @@ void setup()
 
 #if CONFIG_IDF_TARGET_ESP32C3
  	DebugSerial.setPins(20,21);
+    //DebugSerial.begin(MY_BAUD_RATE, SERIAL_8N1, 20, 21);
 #endif // CONFIG_IDF_TARGET_ESP32C3
 
     DebugSerial.begin(MY_BAUD_RATE);
@@ -853,9 +865,9 @@ void setup()
     WiFi.mode(WIFI_OFF);
     yield();
     t_end = millis();
-    uint32_t t_disconnect_dur = t_end - t_begin;
+    disconnect_duration = t_end - t_begin;
     Serial.printf(
-        "\nWifi disconnect took " ANSI_BRIGHT_MAGENTA "%u" ANSI_RESET " ms\n", t_disconnect_dur
+        "\nWifi disconnect took " ANSI_BRIGHT_MAGENTA "%u" ANSI_RESET " ms\n", disconnect_duration
     );
 
     uint32_t t_setup_end = millis();
@@ -872,6 +884,13 @@ void setup()
 #ifdef PIN_AWAKE
     digitalWrite( PIN_AWAKE, LOW );
     pinMode( PIN_AWAKE, INPUT );
+#endif
+
+#if CONFIG_IDF_TARGET_ESP32C3
+ #ifdef PIN_LED
+    digitalWrite( PIN_LED, HIGH );
+    pinMode( PIN_LED, INPUT );
+ #endif // PIN_LED
 #endif
 
     esp_deep_sleep_start();
