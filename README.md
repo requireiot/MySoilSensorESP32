@@ -65,21 +65,21 @@ The final design uses an ESP32-WROOM module.
 I also tried a ESP32-C3 "Super Mini" module, the source code supports this. This 
 is a single core RISC-V based processor, with the following pros and cons, 
 compared to the ESP32:
-* *Pro*: lower current draw when WiFi is on, 50 mA vs 130 mA
+* *Pro*: lower current draw when WiFi is on, 100 mA vs 130 mA
 * *Pro*: easy to use the little development module in a production system, because 
   it has no USB-serial chip that would consume power all the time, the ESP32-C3 
   has builtin USB capability
-* *Con*: higher current draw during sleep, I measured about 40µA
-* *Con*: unreliable WiFi connection. This is probably a property of the *module* 
-  rather than the ESP32-C3 *chip*, because of the tiny antenna -- but that was a 
-  knockout criterion for me
+* *Con*: higher current draw during sleep, I measured about 85µA
+* *Con*: unreliable WiFi connection.
+
+The unreliable WiFi connection with the ESP32-C3 probably has nothing to do with the processor per se, but with the board layout: the module I bought from Aliexpress looks exactly like the “bad module” shown in [this post](https://roryhay.es/blog/esp32-c3-super-mini-flaw).
 
 ### Minimize power consumption
 
 - a bare ESP32-WROOM module is better than a development module -- probably due 
   to the voltage regulators and USB interfaces on those modules. Power 
   consumption during deep sleep, with a bare ESP32-WROOM, powered from 2x 
-  AAA battery, is **14µA**.
+  AAA battery, is under **10µA**.
 - to avoid any power loss through a voltage regulator, I am running the ESP32 
   directly from a pair of AAA batteries. Newer processors will work down to 2.3V, 
   I just had to make sure the soil moisture sensor also works below 3V (see below)
@@ -205,9 +205,11 @@ These factors contribute to power consumption or battery drain,
 in decreasing order of importance:
 1. the self-discharge of the AAA batteries, according to [[1]](http://www.gammon.com.au/power), 
 about 35 µA or **0.84 mAh** per day 
-1. deep sleep, at ~14 µA or **0.34 mAh** per day
-1. wake time with WiFi ON, 130 mA x ~300ms per wakeup or **0.26 mAh** per day
-1. wake time, with WiFi OFF, 50 mA x ~300ms per wakeup or **0.10 mAh** per day
+1. deep sleep, at ~8 µA or **0.2 mAh** per day
+1. wake time with WiFi ON, 130 mA x ~600ms per wakeup or **0.52 mAh** per day
+1. wake time, with WiFi OFF, 30 mA x ~300ms per wakeup or **0.06 mAh** per day
+
+This adds up to a charge of 87mC per wake period, which closely matches an actual measurement with a [Nordic Power Profiler](https://www.nordicsemi.com/Products/Development-hardware/Power-Profiler-Kit-2).
 
 We have brought the design to the point where overall power consumption is 
 dominated by the self-dischange of the Alkaline batteries, so there is no point 
