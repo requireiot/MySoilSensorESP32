@@ -13,6 +13,7 @@ This is part of my home automation setup. For details, see my [blog](https://req
   - [Minimize power consumption](#minimize-power-consumption)
 - [Building blocks](#building-blocks)
 - [Hardware](#hardware)
+- [Batteries](#batteries)
 - [Firmware](#firmware)
 - [MQTT messages](#mqtt-messages)
 - [Over-the-air update](#over-the-air-update)
@@ -109,6 +110,16 @@ For development and debugging, I added pin connectors to connect to FTDI-232 sty
 USB-to-serial interfaces, one for the primary UART (for firmware upload) and one 
 for UART#2, where the software outputs logging messages. For a production system, 
 this is not necessary and can be left out, of course.
+
+## Batteries
+
+One option is to power the ESP32 directly from two AA or AAA batteries. The battery life calculations reported below apply to this configuration.
+
+As an alternative, I have built a few units with a _rechargable_ battery and a solar panel for charging, attached to the outside of the case. This works as well, if the case can be positioned such taht the solar panel faces the sun. Here is teh bill of materials for this variant:
+* a "5V 75mA 80x45mm" solar panel, from Aliexpress, ca. €1
+* a TP4056 battery management module, from Aliexpress, ca. €0.20
+* a small Li-ion battery, 3.7V at 1000 mA, from Reichelt (p/n AKKU 30389), €1.80 ... this is a noname replacement battery for some GPS receiver. I have also used a replacement battery for a 1st gen Apple iPod nano.
+* a low-drop, low quescent current voltage regulator for 3.3V, HT7833
 
 ## Firmware
 

@@ -4,7 +4,7 @@
  * Created		: 9-Feb-2020
  * Tabsize		: 4
  * 
- * This Revision: $Id: MyWifi.cpp 1635 2024-10-10 10:09:14Z  $
+ * This Revision: $Id: MyWifi.cpp 1722 2025-03-02 10:18:05Z  $
  */
 
 /*
@@ -41,8 +41,18 @@
 
 //----- constants and preferences
 
+/*
+    in my setup (Fritzbox 7390 + Mesh Repeater Fritzbox 7490), re-connecting
+    to the same WiFi channel and BSSID as during the previous wake cycle takes 
+    much LONGER (>1000ms) that a fresh connection using SSID, username
+    and password (400 ms). 
+    For some reason, the DNS lookup for the MQTT broker also takes longer 
+    (>1000ms vs 20ms), as does connecting to the MQTT broker (>1000ms vs 30ms)
+*/
 /// allow automatic connection to Wifi AP on power up ?
-const bool AUTOCONNECT = false;
+const bool ALLOW_AUTO_CONNECT_ON_START = false;
+/// allow automatic re-connection to Wifi AP using channed and BSSID from NVM?
+const bool ALLOW_AUTO_RECONNECT = false;
 
 //----- external references
 
@@ -265,7 +275,7 @@ int setupWifi( bool allow_reconnect )
 {
     connectMode = connect_t::error;
     bool isValid = wifiState.is_valid();
-    allow_reconnect = isValid && allow_reconnect;
+    allow_reconnect = isValid && allow_reconnect && ALLOW_AUTO_RECONNECT;
 
     //_printConfig();
 
@@ -276,14 +286,14 @@ int setupWifi( bool allow_reconnect )
 
     uint32_t t_start = millis();
 
-    WiFi.persistent( AUTOCONNECT );
+    WiFi.persistent( ALLOW_AUTO_CONNECT_ON_START );
     WiFi.mode(WIFI_STA);
     WiFi.setAutoReconnect(allow_reconnect);
     yield();
 
     if (allow_reconnect) {
 //----- 1. check if Wifi has already been connected in the background
-        if (AUTOCONNECT && (WiFi.waitForConnectResult(300) == WL_CONNECTED)) {
+        if (ALLOW_AUTO_CONNECT_ON_START && (WiFi.waitForConnectResult(300) == WL_CONNECTED)) {
             Serial.print("already connected ");
             connectMode = connect_t::autoconnect;
         } else if (isValid) {
