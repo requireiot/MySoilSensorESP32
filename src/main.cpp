@@ -5,11 +5,11 @@
  * Created		: 14-May-2024
  * Tabsize		: 4
  * 
- * This Revision: $Id: MySoilSensorESP32.cpp 1635 2024-10-10 10:09:14Z  $
+ * This Revision: $Id: main.cpp 1725 2025-03-07 11:10:39Z  $
  */
 
 /*
-   Copyright (C) 2024 Bernd Waldmann
+   Copyright (C) 2024,2025 Bernd Waldmann
 
    This Source Code Form is subject to the terms of the Mozilla Public License, 
    v. 2.0. If a copy of the MPL was not distributed with this file, You can 
@@ -21,10 +21,6 @@
 /**
  * @brief Multi-channel soil moisture sensor, reporting via MQTT,
  * using an ESP32 module
- * 
- * The code is sprinkled with yield() statements, this is probably unnecessary
- * for the dual core ESP32, where the Wifi code runs on the 2nd core, but it 
- * may be needed for the single-code ESP32-C3
  */
 
 //==============================================================================
@@ -37,17 +33,17 @@
 #include <time.h>
 #include <stdarg.h>
 
-//----- Arduino and libraries
-#include <Arduino.h>            // LGPLv2.1+ license
-#include <SPI.h>                // LGPLv2.1+ license
-#include <WiFi.h>               // LGPLv2.1+ license
-
+//----- Espressif libraries
 #include <rom/rtc.h>            // Apache-2.0 license
 #include <soc/rtc_cntl_reg.h>   // Apache-2.0 license
 #include <driver/rtc_io.h>      // Apache-2.0 license
 #include <esp32/clk.h>          // Apache-2.0 license
 #include <esp_wifi.h>           // Apache-2.0 license
 
+//----- Arduino libraries
+#include <Arduino.h>            // LGPLv2.1+ license
+#include <SPI.h>                // LGPLv2.1+ license
+#include <WiFi.h>               // LGPLv2.1+ license
 #include <ArduinoOTA.h>         // LGPLv2.1+ license, https://github.com/jandrassy/ArduinoOTA
 #include <ArduinoJSON.h>        // MIT license, https://github.com/bblanchon/ArduinoJson
 #include <PubSubClient.h>       // MIT license, https://github.com/knolleary/pubsubclient
@@ -58,24 +54,12 @@
 #include "MyWifi.h"
 #include "ota.h"
 
+/// version string published at startup.
+const char VERSION[] = "$Id: main.cpp 1725 2025-03-07 11:10:39Z  $ " __DATE__ " " __TIME__;
+/*                      1...5...10....5...20....5...30....5...40...5...50....5...60 */
 //==============================================================================
 #pragma region Preferences
 
-/*
-    This supports ESP32 and ESP32C3 based boards
-    - tested with ESP32-WROOM-32E
-        platformio: board=esp32dev
-      platform-specific code with any of these
-        #ifdef ARDUINO_ESP32_DEV 
-        #if CONFIG_IDF_TARGET_ESP32 
-        #ifdef __XTENSA__
-    - WIP with ESP32C3 supermini, 
-        platformio: board=lolin_c3_mini
-      platform-specific code with any of these
-        #ifdef ARDUINO_LOLIN_C3_MINI
-        #if CONFIG_IDF_TARGET_ESP32C3 
-        #ifdef __riscv
-*/
 
 #define BAT_R1 470  // from Vbat to ADC
 #define BAT_R2 470  // from ADC to GND
@@ -92,14 +76,8 @@
 #define SUBTOPIC_OTA "ota"
 #define SUBTOPIC_CONFIG "config"
 
-
-/// version string published at startup.
-const char VERSION[] = "$Id: MySoilSensorESP32.cpp 1635 2024-10-10 10:09:14Z  $ " __DATE__ " " __TIME__;
-/*                      1...5...10....5...20....5...30....5...40...5...50 */
-
 // measure voltage on which GPIO pins?
 
-#if CONFIG_IDF_TARGET_ESP32
  #define PIN_AWAKE 23    // show that we are awake, e.g. for oscilloscope trigger
  #define PIN_BATTERY 36  // ADC used to measure battery voltage. Arduino name: A0
 
@@ -120,25 +98,13 @@ const char VERSION[] = "$Id: MySoilSensorESP32.cpp 1635 2024-10-10 10:09:14Z  $ 
     4       // GPIO 4=ADC2_0
  //  23,     //     
     };    
-#endif // CONFIG_IDF_TARGET_ESP32
-
-#if CONFIG_IDF_TARGET_ESP32C3
- #define PIN_AWAKE 7    // show that we are awake, e.g. for oscilloscope trigger
- #define PIN_BATTERY 0  // ADC used to measure battery voltage. Arduino name: A0
- #define PIN_LED 8
-
-  /// connect these GPIO to sensor outputs
- const int pins_sensor[] = { 1,2,3,4 }; // opt 5
- /// connect these GPIO to sensor VCC
- const int pins_power[]  = { 10 }; 
-#endif // CONFIG_IDF_TARGET_ESP32C3
 
 const size_t NCHANNELS = sizeof pins_sensor / sizeof pins_sensor[0];    ///< no of sensor channels
 
 /// max expected ADC value in millivolts
 const unsigned ADC_RANGE_MV = 3000;
 /// unconncted input with pulldown
-const unsigned ALMOST_ZERO_MV = 200;
+const unsigned ALMOST_ZERO_MV = 400;
 /// must have seen this much swing to consider measurement valid
 const unsigned MIN_SENSOR_DYNAMIC_RANGE = ADC_RANGE_MV / 20;
 
@@ -164,8 +130,8 @@ struct Configuration {
 
 const Configuration defaultConfiguration = {
     .signature = SIGNATURE,
-    .meas_interval = 60 MINUTES,
-    .info_interval = 12 HOURS,
+    .meas_interval = 30 MINUTES,
+    .info_interval = 6 HOURS,
     .powerup = 150
 };
 
@@ -198,7 +164,6 @@ void setConfiguration( const char* json )
     an int32_t can represent up to 68 years in seconds
 */
 
-
 #ifdef QUICK    // shortened timing, for debugging only, may be defined in myauth.h
  // minimum time between refreshes
  const unsigned long SOIL_REPORT_INTERVAL_S = 30 SECONDS;  
@@ -220,31 +185,40 @@ void setConfiguration( const char* json )
 //==============================================================================
 #pragma region Global variables
 
-bool request_ota = false;   ///< flag, enable OTA and don't go to sleep
-bool firstRun = false;      ///< flag, this is not waking up from deep sleep
+bool request_ota = false;       ///< flag, enable OTA and don't go to sleep
+bool firstRun = false;          ///< flag, this is not waking up from deep sleep
 
 String hostname;
 String mqttbase;
 String topic_ota;
 String topic_config;
 
-uint32_t t_mqtt;            ///< took this long to connect to MQTT broker [ms]
-uint32_t t_dns;             ///< took this long to look up MQTT broker hostname
-
-#ifdef PIN_BATTERY
- int battery_mV;            ///< measured battery voltage, in millivolts
-#endif
-String Uptime;              ///< total uptime, including periods of sleep
-
-RTC_DATA_ATTR uint64_t bootCount;       ///< count # of times we have woken up from sleep
-RTC_DATA_ATTR time_t lastDebugReport_s; ///< time is s of last time battery etc was reported
-// how long were we awake? Remember in RTC memory and report next time
+//----- timing measurements to be reported
+/// took this long to connect to MQTT broker [ms]
+uint32_t t_mqtt;                
+/// took this long to look up MQTT broker hostname
+uint32_t t_dns;                 
+/// how long were we awake? Remember in RTC memory and report next time
 RTC_DATA_ATTR unsigned wake_duration;
+/// how long did it take to disconnect from WiFi AP? Remember in RTC memory and report next time
 RTC_DATA_ATTR unsigned disconnect_duration;
 
-//----- measurements
-int sensor_abs[NCHANNELS];  ///< absolute measurements of sensor output, in mV
-int sensor_rel[NCHANNELS];  ///< sensor output relative to observed range, in promille
+#ifdef PIN_BATTERY
+ int battery_mV;                ///< measured battery voltage, in millivolts
+#endif
+
+String Uptime;                  ///< total uptime, including periods of sleep
+
+/// count # of times we have woken up from sleep
+RTC_DATA_ATTR uint64_t bootCount;       
+/// last time battery etc was reported
+RTC_DATA_ATTR time_t lastDebugReport_s; 
+
+//----- soil moisture measurements
+/// absolute measurements of sensor output, in mV
+int sensor_abs[NCHANNELS];  
+/// sensor output relative to observed range, in promille
+int sensor_rel[NCHANNELS];  
 
 // remember min/max values beyond sleep
 struct SensorRange { int vmin; int vmax; bool valid; };
@@ -252,14 +226,7 @@ RTC_DATA_ATTR SensorRange ranges[NCHANNELS];
 
 PubSubClient mqttClient(wifiClient);
 
-#if CONFIG_IDF_TARGET_ESP32
- HardwareSerial DebugSerial(2);     // on ESP32, we use UART#2 for debug outputs
-#endif // CONFIG_IDF_TARGET_ESP32
-
-#if CONFIG_IDF_TARGET_ESP32C3
- HardwareSerial DebugSerial(0);     /// on ESP32-C3, we use hardware UART#0 for debug outputs
-#endif // CONFIG_IDF_TARGET_ESP32C3
-
+HardwareSerial DebugSerial(2);     // on ESP32, we use UART#2 (gpio 16,17) for debug outputs
 #undef Serial
 #define Serial DebugSerial
 
@@ -293,15 +260,11 @@ String formatUptime( time_t now )
 char msgbuf[256];
 
 /**
- * @brief Create debug record for publishing via MQTT
+ * @brief Create JSON record with debug information for publishing via MQTT
  * 
  * @return const char*  Pointer to static buffer with JSON string
- * @code
-    {"FreeHeap":246456,"Boot":1,"Battery":3034,"Uptime":"999d 0:00:00","RSSI":90}
-    1...5...10...15...20...25...30...35...40...45...50...55...60...65...70...75...80...85...90
-   @endcode
  */
-const char* debug_to_json()
+ const char* debug_to_json()
 {
     JsonDocument doc;
 
@@ -318,7 +281,7 @@ const char* debug_to_json()
 
 
 /**
- * @brief Each cycle, prepare JSON report on measured parameters
+ * @brief Create JSON record with measured parameters for publishing via MQTT
  * 
  * @return const char*  Pointer to static buffer with JSON string
  */
@@ -342,6 +305,11 @@ const char* state_to_json()
 }
 
 
+/**
+ * @brief Create JSON record with information about WiFi timing, for publishing via MQTT
+ * 
+ * @return const char*  Pointer to static buffer with JSON string
+ */
 const char* wifi_to_json()
 {
     JsonDocument doc;
@@ -382,11 +350,9 @@ void subscribeCallback(char* topic, byte* payload, unsigned length)
 {
     String spay(payload,length);
 
-    Serial.printf(
-        "\n%5lu MQTT: "
-        "received '" ANSI_BLUE "%s" ANSI_RESET "'"
-        " = '" ANSI_BOLD "%s" ANSI_RESET "'\n",
-        millis(), topic, spay.c_str() );
+    log_i( "MQTT: received '" ANSI_BLUE "%s" ANSI_RESET "' =\n '" ANSI_BOLD "%s" ANSI_RESET "'",
+        topic, spay.c_str() );
+
     if (0==strcmp( topic, topic_ota.c_str())) {
         if ( (spay=="on") || (spay=="ON") || (spay=="1") ) {
             request_ota = true;
@@ -408,10 +374,7 @@ bool mqttConnect()
     uint32_t t_begin, t_end;
     const char* clientName = hostname.c_str();
 
-    Serial.printf(
-        "%5lu MQTT: connecting as '" ANSI_BLUE "%s" ANSI_RESET 
-        "' to broker '" ANSI_BLUE "%s" ANSI_RESET "'\n", 
-        millis(), clientName, MQTT_BROKER );
+    log_i("connecting as '%s' to broker '%s'", clientName, MQTT_BROKER );
 
     topic_ota = mqttbase + SUBTOPIC_OTA;
     topic_config = mqttbase + SUBTOPIC_CONFIG;
@@ -424,34 +387,20 @@ bool mqttConnect()
             t_end = millis();
             t_mqtt = t_end - t_begin;
 
-    		Serial.printf( 
-                "%5lu MQTT: " ANSI_BRIGHT_GREEN "connected" ANSI_RESET 
-                " after " ANSI_BRIGHT_MAGENTA "%u" ANSI_RESET " ms\n", 
-                millis(), t_mqtt );
+    		log_i("connected after %u ms", t_mqtt );
 
             mqttClient.subscribe( topic_ota.c_str() );
-            /*
-            Serial.printf(
-                "%5lu MQTT: subscribed to " ANSI_BLUE "%s" ANSI_RESET "\n", 
-                millis(), topic_ota.c_str() );
-            */
-
             mqttClient.subscribe( topic_config.c_str() );
-            /*
-            Serial.printf(
-                "%5lu MQTT: subscribed to " ANSI_BLUE "%s" ANSI_RESET "\n", 
-                millis(), topic_config.c_str() );
-            */
 
             return true;
     	} else {
             int st = mqttClient.state();
-    		Serial.printf("%5ld MQTT: failed %d, rc=%d\n", millis(), i, st);
+    		log_e("failed %d, rc=%d", i, st);
             delay(waitms);
-            waitms *= 2;
+            //waitms *= 2;
     	}
     }
-    Serial.println( ANSI_RED "Could not connect to MQTT" ANSI_RESET );
+    log_e( ANSI_RED "Could not connect to MQTT" ANSI_RESET );
 	return false;
 }
 
@@ -477,17 +426,12 @@ void mqttPublish( const char* subtopic, const char* message, bool retain=false )
     yield(); mqttClient.loop(); yield();
 
     String topic = mqttbase + subtopic;
-    mqttReconnect();
+    if (!mqttReconnect()) return;
 	if (mqttClient.publish(topic.c_str(), message, (boolean)retain)) {
-        Serial.printf(
-            "%5lu MQTT: publish '" ANSI_BLUE "%s" ANSI_RESET "' = \n"
-            "'" ANSI_BLUE "%s" ANSI_RESET "'\r\n", 
-            millis(), topic.c_str(), message ? message : "NULL" );
+        log_i("publish '%s' =\n '%s'", topic.c_str(), message ? message : "NULL" );
 	} else {
-		Serial.print("MQTT: publish " ANSI_BRIGHT_RED "fail" ANSI_RESET "\n");
+		log_e("publish " ANSI_BRIGHT_RED "fail" ANSI_RESET);
 	}
-
-    //yield(); mqttClient.loop(); yield();
     active_wait(10);
 }
 
@@ -524,33 +468,52 @@ void mqttPublishWifi()
 }
 
 
+bool dns_lookup( const char* servername, IPAddress& ip )
+{
+    uint32_t t_begin, t_end;
+    int ret;
+
+    t_begin = millis();
+    // try DNS multiple times
+    int waitms = 100;
+    // try DNS request 10 times
+    for (int i=0; i<10; i++) {
+        ret=WiFi.hostByName(servername, ip); 
+        if (1 == ret) {
+            t_end = millis();
+            t_dns = t_end - t_begin;       
+            log_i("DNS: '%s' is %s, took " ANSI_BRIGHT_MAGENTA "%u" ANSI_RESET " ms",
+                servername, ip.toString().c_str(), t_dns );
+            return true;
+        } else {
+            log_e("failed DNS lookup, error %d",ret);
+            delay(waitms);
+            //waitms *= 2;            
+        }
+    }
+    return false;
+}
+
+
 /**
  * Initialize and connect to MQTT server
  */
-void mqttSetup()
+bool mqttSetup()
 {
     uint32_t t_begin, t_end;
 
     // had some issues with slow DNS response. now doing DNS lookup as a separate step
     IPAddress ip;
     t_begin = millis();
-    int ret = WiFi.hostByName(MQTT_BROKER, ip);
-    while (1 != ret) {
-        Serial.printf("%5ld failed DNS lookup, error %d\n",millis(),ret);
-        delay(100);
-        ret = WiFi.hostByName(MQTT_BROKER, ip);
-    }
+    if (!dns_lookup(MQTT_BROKER,ip)) return false;
     t_end = millis();
     t_dns = t_end - t_begin;
-
-    Serial.printf("%5lu DNS: broker " 
-        ANSI_BLUE "%s" ANSI_RESET " is " 
-        ANSI_BLUE "%s" ANSI_RESET 
-        " took " ANSI_BRIGHT_MAGENTA "%u" ANSI_RESET " ms\n",
-        millis(), MQTT_BROKER, ip.toString().c_str(), t_dns );
+    log_i("DNS: broker %s is %s (" ANSI_BRIGHT_MAGENTA "%u" ANSI_RESET " ms)", 
+        MQTT_BROKER, ip.toString().c_str(), t_dns );
     mqttClient.setServer(ip, 1883);
     mqttClient.setCallback(subscribeCallback);
     mqttReconnect();
+    return true;
 }
 
 //------------------------------------------------------------------------------
@@ -609,7 +572,7 @@ void measureSensor( int ch )
 {
     unsigned voltage = readSensor(pins_sensor[ch]);
     sensor_abs[ch] = voltage;
-    Serial.printf("%d ",pins_sensor[ch]);
+    log_i("SENSOR: measure %d ",pins_sensor[ch]);
 
     SensorRange& r = ranges[ch];
     if (voltage < ALMOST_ZERO_MV) {
@@ -638,13 +601,10 @@ void measureSensor( int ch )
  */
 void powerSensors()
 {
-    Serial.printf("%5ld SENSOR: power-up, ",millis() );
     for (auto pin : pins_power) {
         pinMode( pin, OUTPUT );
         digitalWrite( pin, HIGH );
-        Serial.printf("%d ",pin);
     }
-    Serial.println();
 }
 
 
@@ -654,16 +614,13 @@ void powerSensors()
  */
 void poweroffSensors()
 {
-    Serial.printf("\n%5ld SENSOR: power down sensors ",millis() );
-    for (int pin : pins_power) {
+    for (auto pin : pins_power) {
         digitalWrite( pin, LOW );
     }
     delay(10);
-    for (int pin : pins_power) {
+    for (auto pin : pins_power) {
         pinMode(pin,INPUT);
-        Serial.printf("%d ",pin);
     }
-    Serial.println();
 }
 
 //------------------------------------------------------------------------------
@@ -684,13 +641,6 @@ void setup()
 #ifdef PIN_AWAKE
     pinMode( PIN_AWAKE, OUTPUT );
     digitalWrite( PIN_AWAKE, HIGH );
-#endif
-
-#if CONFIG_IDF_TARGET_ESP32C3
- #ifdef PIN_LED
-    pinMode( PIN_LED, OUTPUT );
-    digitalWrite( PIN_LED, LOW );
- #endif // PIN_LED
 #endif
 
   	int rtc_reset_reason = rtc_get_reset_reason(0); 
@@ -718,21 +668,13 @@ void setup()
 
     WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG,0); // disable brownout detection
 
-#if CONFIG_IDF_TARGET_ESP32
     DebugSerial.setPins(16,17);
-#endif // CONFIG_IDF_TARGET_ESP32
-
-#if CONFIG_IDF_TARGET_ESP32C3
- 	DebugSerial.setPins(20,21);
-    //DebugSerial.begin(MY_BAUD_RATE, SERIAL_8N1, 20, 21);
-#endif // CONFIG_IDF_TARGET_ESP32C3
-
     DebugSerial.begin(MY_BAUD_RATE);
-    Serial.setDebugOutput(true);  
+    DebugSerial.setDebugOutput(true);  
 
     Serial.println("========================================================");
 
-//----- measure battery voltage in mV, for later rerporting via MQTT
+//----- measure battery voltage in mV, for later reporting via MQTT
 
 #ifdef PIN_BATTERY
     battery_mV = analogReadMilliVolts( PIN_BATTERY ) * (BAT_R1 + BAT_R2) / BAT_R2;
@@ -745,22 +687,22 @@ void setup()
 
 //----- report environment -----------------------------------------------------
 
-    Serial.printf( " Chip:" ANSI_BOLD "%s" ANSI_RESET, 
+    Serial.printf( "Chip:" ANSI_BOLD "%s" ANSI_RESET, 
         ESP.getChipModel() );
-    Serial.printf( " at " ANSI_BOLD "%d" ANSI_RESET "MHz",
-        (int)(esp_clk_cpu_freq()/1000000));
-    Serial.printf( "  Flash:" ANSI_BOLD "%d" ANSI_RESET "K", 
-        (int)(ESP.getFlashChipSize() / 1024));
+    Serial.printf( " at " ANSI_BOLD "%u" ANSI_RESET " MHz",
+        (unsigned)ESP.getCpuFreqMHz() );
+    Serial.printf( "  Flash:" ANSI_BOLD "%u" ANSI_RESET " K", 
+        (unsigned)(ESP.getFlashChipSize() / 1024));
     Serial.printf( "  Core:" ANSI_BOLD "%s" ANSI_RESET, 
         esp_get_idf_version() );
     Serial.println();
 
-    Serial.printf( "Reset: RTC=" ANSI_RED ANSI_BOLD "%d" ANSI_RESET, 
+    Serial.printf( "Reset:" ANSI_RED ANSI_BOLD "%d" ANSI_RESET, 
         rtc_reset_reason );
     Serial.printf( "  Heap:" ANSI_BOLD "%d" ANSI_RESET, 
         ESP.getFreeHeap() );
 #ifdef PIN_BATTERY
-    Serial.printf( "  Battery " ANSI_BOLD "%d" ANSI_RESET "mV",
+    Serial.printf( "  Battery " ANSI_BOLD "%d" ANSI_RESET " mV",
         battery_mV );
 #endif
     Serial.printf( "  Time " ANSI_BRIGHT_BLUE "%ld" ANSI_RESET "s  Uptime %s", 
@@ -770,20 +712,16 @@ void setup()
 //----- measure sensors
 
     // wait for sensor power supply
-    Serial.printf("%5lu SENSOR: wait for power-up (%u ms)\n", millis(), SENSOR_RAMPUP_MS);
+    log_i("SENSOR: wait for power-up (%u ms)", SENSOR_RAMPUP_MS);
     while ( (unsigned long)(millis()-t_power) < SENSOR_RAMPUP_MS ) {
         delay(10);
     }
 
-    if (!ignoreSensors) {   // ignore sensor readins for the first few minutes?
-        Serial.printf("%5lu SENSOR: range ", millis()); 
-        for (auto r : ranges ) Serial.printf(" %d:%d",r.vmin,r.vmax);
-        Serial.println();
-
-        Serial.printf("%5lu SENSOR: measure ",millis());
+    if (!ignoreSensors) {   // ignore sensor readings for the first few minutes?
+        for (auto r : ranges ) 
+            log_i("SENSOR: range %d:%d",r.vmin,r.vmax);
         for (int i=0; i<NCHANNELS; i++) {
             measureSensor(i);
-            //yield(); mqttClient.loop(); yield();  
         }
     } // if (!ignoreSensors)
 
@@ -805,47 +743,49 @@ void setup()
         hostname = WiFi.getHostname();
         mqttbase = "soil/" + hostname + "/";
 
-        mqttSetup();
+        if (mqttSetup()) {
 
-        if (firstRun)
-            mqttPublish("version",VERSION, true);
-        
-        // report bat voltage etc at first round, and then every 12h or so
-        if (firstRun || 
-            ( (time_t)(now_s - lastDebugReport_s) > INFO_REPORT_INTERVAL_S) 
-        ) {
-            lastDebugReport_s = now_s;
-            mqttPublishDebug();
+            if (firstRun)
+                mqttPublish("version",VERSION, true);
+            
+            // report bat voltage etc at first round, and then every 12h or so
+            if (firstRun || 
+                ( (time_t)(now_s - lastDebugReport_s) > INFO_REPORT_INTERVAL_S) 
+            ) {
+                lastDebugReport_s = now_s;
+                mqttPublishDebug();
+            } else {
+                yield(); mqttClient.loop(); yield();
+            }
+
+            mqttPublishWifi();
+
+            if (!ignoreSensors) {   // ignore sensor readings for the first few minutes?
+                mqttPublishState();
+            }
+
+            if (config_changed) {
+                mqttPublish( SUBTOPIC_CONFIG, NULL, true );
+                active_wait(100);
+            }
+
+            if (request_ota) {
+                mqttPublish( SUBTOPIC_OTA, NULL, true );
+                active_wait(100);
+                setupOTA(); 
+            }
+
+            mqttClient.disconnect();
+            active_wait(10);
         } else {
-            yield(); mqttClient.loop(); yield();
+            log_e("MQTT failed");
         }
-
-        mqttPublishWifi();
-
-        if (!ignoreSensors) {   // ignore sensor readings for the first few minutes?
-            mqttPublishState();
-        }
-
-        if (config_changed) {
-            mqttPublish( SUBTOPIC_CONFIG, NULL, true );
-            active_wait(100);
-        }
-
-        if (request_ota) {
-            mqttPublish( SUBTOPIC_OTA, NULL, true );
-            active_wait(100);
-            setupOTA(); 
-        }
-
-        mqttClient.disconnect();
-        active_wait(10);
     }
 
 //----- wrap up basic setup ----------------------------------------------------
 
     uint32_t t_basic_setup_end = millis();
-    Serial.printf(
-        "setup(): " ANSI_BOLD "%u" ANSI_RESET " ms. ", 
+    log_i("setup(): " ANSI_BOLD "%u" ANSI_RESET " ms", 
         (unsigned)(t_basic_setup_end-t_setup_start)
     );
 
@@ -853,9 +793,6 @@ void setup()
         Serial.print("OTA enabled. ");
         return;
     }
-
-//    Serial.flush();
-//    yield();
 
 //----- now enter deep sleep ---------------------------------------------------
 
@@ -866,16 +803,13 @@ void setup()
     yield();
     t_end = millis();
     disconnect_duration = t_end - t_begin;
-    Serial.printf(
-        "\nWifi disconnect took " ANSI_BRIGHT_MAGENTA "%u" ANSI_RESET " ms\n", disconnect_duration
-    );
+    log_i("Wifi disconnect took " ANSI_BRIGHT_MAGENTA "%u" ANSI_RESET " ms", 
+        disconnect_duration );
 
     uint32_t t_setup_end = millis();
     wake_duration = t_setup_end - t_setup_start;
-    Serial.printf(
-        "\nRan for " ANSI_BOLD "%u" ANSI_RESET " ms, going to sleep now.\n", 
-        wake_duration
-    );
+    log_i("Ran for " ANSI_BOLD "%u" ANSI_RESET " ms, going to sleep now.", 
+        wake_duration );
     Serial.flush();
 
     esp_sleep_enable_timer_wakeup( SOIL_REPORT_INTERVAL_S * 1000000ull );
@@ -884,13 +818,6 @@ void setup()
 #ifdef PIN_AWAKE
     digitalWrite( PIN_AWAKE, LOW );
     pinMode( PIN_AWAKE, INPUT );
-#endif
-
-#if CONFIG_IDF_TARGET_ESP32C3
- #ifdef PIN_LED
-    digitalWrite( PIN_LED, HIGH );
-    pinMode( PIN_LED, INPUT );
- #endif // PIN_LED
 #endif
 
     esp_deep_sleep_start();

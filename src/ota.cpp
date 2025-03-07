@@ -25,7 +25,6 @@ const char* OTA_PASSWORD  = "123";  //the WIFI_PASSWORD you will need to enter t
 const int   OTA_PORT      = 3232;
 
 extern HardwareSerial DebugSerial;
-
 #undef Serial
 #define Serial DebugSerial
 

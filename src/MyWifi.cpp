@@ -4,7 +4,7 @@
  * Created		: 9-Feb-2020
  * Tabsize		: 4
  * 
- * This Revision: $Id: MyWifi.cpp 1722 2025-03-02 10:18:05Z  $
+ * This Revision: $Id: MyWifi.cpp 1724 2025-03-05 09:28:44Z  $
  */
 
 /*
@@ -111,7 +111,7 @@ static void _printConfig()
     Serial.printf("\tGateway : %s\n", iptoa(wifiState.gateway) ); 
     Serial.printf("  Subnet  : %s", iptoa(wifiState.subnet) ); 
     Serial.printf("\t\tDNS     : %s\n", iptoa(wifiState.dns) ); 
-
+    Serial.printf("  Hostname: %s",WiFi.getHostname());
     uint8_t mac[6];
     WiFi.macAddress(mac);
     Serial.printf("  MAC %02X:%02X:%02X:%02X:%02X:%02X\n",
@@ -147,24 +147,29 @@ void reportWifi( JsonDocument& doc )
 
 //----------------------------------------------------------------------------
 
-void onWiFiEvent(WiFiEvent_t event) {
-    Serial.printf(" [WiFi:%d] ", event);
 
+void onWiFiEvent(WiFiEvent_t event) 
+{
     switch(event) {
+    	
         case ARDUINO_EVENT_WIFI_STA_GOT_IP:
-            Serial.print("got IP ");
+            log_i("got IP ");
             break;
+            
         case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
-            Serial.print("lost connection ");
+            log_i("lost connection ");
             break;
+            
         case ARDUINO_EVENT_WIFI_STA_AUTHMODE_CHANGE:
-            Serial.print("authmode change ");
+            log_i("authmode change ");
             break;
+            
         case ARDUINO_EVENT_WIFI_STA_CONNECTED:
-            Serial.print("connected ");
+            log_i("connected ");
             break;
+            
         case ARDUINO_EVENT_WIFI_STA_STOP:
-            Serial.print("stop ");
+            log_i("stop ");
             break;
     }    
 }
@@ -182,10 +187,9 @@ static bool _reconnectWifi()
     uint32_t t1, t2;
     int wfs;
 
-    Serial.printf("try to re-connect ch=%d, ", wifiState.channel);
+    log_i("try to re-connect ch=%d, ", wifiState.channel);
     uint32_t t_start = millis();
 
-    WiFi.onEvent(onWiFiEvent);
     WiFi.config( wifiState.ip, wifiState.gateway, wifiState.subnet, wifiState.dns, wifiState.dns );
     WiFi.begin( WIFI_SSID, WIFI_PASSWORD, wifiState.channel, wifiState.bssid, true );
 
@@ -194,23 +198,22 @@ static bool _reconnectWifi()
     while( (wfs=WiFi.status()) != WL_CONNECTED ) {
     
         if (wfs == WL_CONNECT_FAILED) {
-            Serial.println("Failed to connect");
+            log_e( ANSI_BRIGHT_RED ANSI_BOLD "Failed to connect" ANSI_RESET);
             return false;
         }
 
         if ((uint32_t)(millis() - t_start) > timeout) {
-            Serial.print( ANSI_BRIGHT_RED ANSI_BOLD "ERROR  " ANSI_RESET );
+            log_e( ANSI_BRIGHT_RED ANSI_BOLD "timeout ERROR  " ANSI_RESET );
             WiFi.disconnect();
             yield();
             return false;
         }
 
         delay(50);
-        Serial.print("+");
     }
     
     t2 = millis();
-    Serial.printf(" wait: %u ms ", (unsigned)(t2-t1));
+    log_i(" wait: %u ms ", (unsigned)(t2-t1));
 
     return true;
 }
@@ -229,7 +232,7 @@ static bool _freshConnectWifi()
     wl_status_t ws;
     unsigned t;
 
-    Serial.printf("\nfresh connect, SSID='%s'\n",WIFI_SSID);
+    log_i("fresh connect, SSID='%s'",WIFI_SSID);
     uint32_t t_start = millis();
 
     WiFi.begin( WIFI_SSID, WIFI_PASSWORD );
@@ -239,7 +242,6 @@ static bool _freshConnectWifi()
         ws = WiFi.status();
         t = (unsigned)(millis() - t_start);
         Serial.printf(" %3d\r",(int)(ws));
-        delay(200);
         if (t > timeout) {
             Serial.print("ERROR  ");
             WiFi.disconnect();
@@ -247,13 +249,14 @@ static bool _freshConnectWifi()
             WiFi.mode( WIFI_OFF );
             return false;
         }
+        delay(50);  // was 200
     }
     yield();
     if (WiFi.isConnected()) {
-        Serial.print(" ok ");
+        log_i(" ok ");
         return true;
     } else {
-        Serial.printf("Wifi connect failed, status=%d ",WiFi.status());
+        log_e("Wifi connect failed, status=%d ",WiFi.status());
         return false;
     }
 }
@@ -277,15 +280,12 @@ int setupWifi( bool allow_reconnect )
     bool isValid = wifiState.is_valid();
     allow_reconnect = isValid && allow_reconnect && ALLOW_AUTO_RECONNECT;
 
-    //_printConfig();
-
-    Serial.printf("Wifi: config is %s valid, try to connect, ", 
-        isValid ? "" : 
-        ANSI_RED "not" ANSI_RESET 
-        );
+    log_i("Wifi: config is%svalid, try to connect", 
+        isValid ? " " : ANSI_RED " not " ANSI_RESET );
 
     uint32_t t_start = millis();
 
+    WiFi.onEvent(onWiFiEvent);
     WiFi.persistent( ALLOW_AUTO_CONNECT_ON_START );
     WiFi.mode(WIFI_STA);
     WiFi.setAutoReconnect(allow_reconnect);
@@ -294,7 +294,7 @@ int setupWifi( bool allow_reconnect )
     if (allow_reconnect) {
 //----- 1. check if Wifi has already been connected in the background
         if (ALLOW_AUTO_CONNECT_ON_START && (WiFi.waitForConnectResult(300) == WL_CONNECTED)) {
-            Serial.print("already connected ");
+            log_i("already connected ");
             connectMode = connect_t::autoconnect;
         } else if (isValid) {
 //----- 2. if not, then try to re-connect using saved parameters, if available
@@ -310,24 +310,22 @@ int setupWifi( bool allow_reconnect )
     t_wifi_setup = t_stop - t_start;
 
     if (connectMode != connect_t::error) {
-        Serial.print( ANSI_BRIGHT_GREEN "\nWifi is connected." ANSI_RESET );
-        Serial.printf(
-            " mode %d, took " ANSI_BRIGHT_MAGENTA "%u" ANSI_RESET " ms\n", 
+        log_i("mode %d, took " ANSI_BRIGHT_MAGENTA "%u" ANSI_RESET " ms", 
             (int)connectMode, t_wifi_setup );
     } else {
-        Serial.print( ANSI_BRIGHT_RED "\nWifi is NOT connected." ANSI_RESET );
+        log_e( ANSI_BRIGHT_RED "Wifi is NOT connected." ANSI_RESET );
         return connect_t::error;
     }
 
     // default hostname is esp32-ABCDEF, where AB CD EF are last 3 bytes of MAC address
     // if you want a different hostname, define MY_HOSTNAME in platformio.ini
 #ifdef MY_HOSTNAME
-    Serial.printf("  hostname='%s'  ",MY_HOSTNAME);
+    log_i("hostname='%s'",MY_HOSTNAME);
     WiFi.setHostname(MY_HOSTNAME);
 #endif
 
     _fillConfig();  // remember successful connection parameters
-    _printConfig();
+    //_printConfig();
     return int(connectMode);
 }
 

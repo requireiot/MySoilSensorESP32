@@ -9,7 +9,6 @@ This is part of my home automation setup. For details, see my [blog](https://req
 - [Design decisions](#design-decisions)
   - [How to make it waterproof-ish](#how-to-make-it-waterproof-ish)
   - [How to communicate](#how-to-communicate)
-  - [Processor](#processor)
   - [Minimize power consumption](#minimize-power-consumption)
 - [Building blocks](#building-blocks)
 - [Hardware](#hardware)
@@ -50,30 +49,13 @@ To exchange information between the soil sensors and the home automation system
 (soil moisture and performance characteristics from the device, commands to 
 change operating parameters or start over-the-air updates to the device), 
 I could think of the following technologies:
-1. **MQTT**. *Pro*: I alreeady have an MQTT broker running, and this is independent 
-   of a specific home automation system. *Con*: Communication is a bit unpredictable, 
-   as I found out
+1. **MQTT**. *Pro*: I already have an MQTT broker running, and this is independent 
+   of a specific home automation system. *Con*: Communication is a bit unpredictable, as I found out
 2. **HTTP** requests to a REST API, e.g. for OpenHAB. *Pro*: More deterministic, 
    you know exactly when a message has been accepted. *Con*: Specific for one 
    home automation system
 
 I went for (1).
-
-### Processor
-
-The final design uses an ESP32-WROOM module. 
-
-I also tried a ESP32-C3 "Super Mini" module, the source code supports this. This 
-is a single core RISC-V based processor, with the following pros and cons, 
-compared to the ESP32:
-* *Pro*: lower current draw when WiFi is on, 100 mA vs 130 mA
-* *Pro*: easy to use the little development module in a production system, because 
-  it has no USB-serial chip that would consume power all the time, the ESP32-C3 
-  has builtin USB capability
-* *Con*: higher current draw during sleep, I measured about 85µA
-* *Con*: unreliable WiFi connection.
-
-The unreliable WiFi connection with the ESP32-C3 probably has nothing to do with the processor per se, but with the board layout: the module I bought from Aliexpress looks exactly like the “bad module” shown in [this post](https://roryhay.es/blog/esp32-c3-super-mini-flaw).
 
 ### Minimize power consumption
 
@@ -90,6 +72,7 @@ The unreliable WiFi connection with the ESP32-C3 probably has nothing to do with
   IP address and channel number, which are cached in RTC memory
 
 ## Building blocks
+
 - an ESP32 module with custom Arduino-based software
 - two AAA batteries, which should last for more than a year
 - up to 4 cheap capacitive soil sensors, of the kind you find on Aliexpress for 
@@ -115,7 +98,7 @@ this is not necessary and can be left out, of course.
 
 One option is to power the ESP32 directly from two AA or AAA batteries. The battery life calculations reported below apply to this configuration.
 
-As an alternative, I have built a few units with a _rechargable_ battery and a solar panel for charging, attached to the outside of the case. This works as well, if the case can be positioned such taht the solar panel faces the sun. Here is teh bill of materials for this variant:
+As an alternative, I have built a few units with a _rechargable_ battery and a solar panel for charging, attached to the outside of the case. This works as well, if the case can be positioned such that the solar panel faces the sun. Here is the bill of materials for this variant:
 * a "5V 75mA 80x45mm" solar panel, from Aliexpress, ca. €1
 * a TP4056 battery management module, from Aliexpress, ca. €0.20
 * a small Li-ion battery, 3.7V at 1000 mA, from Reichelt (p/n AKKU 30389), €1.80 ... this is a noname replacement battery for some GPS receiver. I have also used a replacement battery for a 1st gen Apple iPod nano.
@@ -189,7 +172,7 @@ To perform an OTA firmware update,
 
 The software prints a lot of logging messages to UART#2 (GPIO pins 16 and 17), 
 to which I connect an optically isolated FTDI-style USB to serial module. This 
-was really helpful for understanding what goes on, and where dekays occur.
+was really helpful for understanding what goes on, and where delays occur.
 
 ## Power consumption and battery life
 
