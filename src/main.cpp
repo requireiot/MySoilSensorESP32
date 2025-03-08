@@ -55,7 +55,7 @@
 #include "ota.h"
 
 /// version string published at startup.
-const char VERSION[] = "$Id: main.cpp 1725 2025-03-07 11:10:39Z  $ " __DATE__ " " __TIME__;
+const char VERSION[] = "$Id: main.cpp 1725 2025-03-07 11:10:39Z  $ built " __DATE__ " " __TIME__;
 /*                      1...5...10....5...20....5...30....5...40...5...50....5...60 */
 //==============================================================================
 #pragma region Preferences
@@ -572,7 +572,8 @@ void measureSensor( int ch )
 {
     unsigned voltage = readSensor(pins_sensor[ch]);
     sensor_abs[ch] = voltage;
-    log_i("SENSOR: measure %d ",pins_sensor[ch]);
+    log_i("ch %d = %u mV [range %d .. %d] ",
+        pins_sensor[ch], voltage, ranges[ch].vmin, ranges[ch].vmax );
 
     SensorRange& r = ranges[ch];
     if (voltage < ALMOST_ZERO_MV) {
@@ -711,30 +712,23 @@ void setup()
 
 //----- measure sensors
 
-    // wait for sensor power supply
     log_i("SENSOR: wait for power-up (%u ms)", SENSOR_RAMPUP_MS);
     while ( (unsigned long)(millis()-t_power) < SENSOR_RAMPUP_MS ) {
         delay(10);
     }
 
     if (!ignoreSensors) {   // ignore sensor readings for the first few minutes?
-        for (auto r : ranges ) 
-            log_i("SENSOR: range %d:%d",r.vmin,r.vmax);
         for (int i=0; i<NCHANNELS; i++) {
             measureSensor(i);
         }
-    } // if (!ignoreSensors)
+    } 
 
     poweroffSensors();
 
 //----- turn on Wifi -----------------------------------------------------------
 
     int wifiOk = setupWifi( !firstRun );
-#ifdef WIFI_DBM
-    esp_wifi_set_max_tx_power( WIFI_DBM * 4 );
-#else
-    esp_wifi_set_max_tx_power(40); // 10 dBm
-#endif
+    //esp_wifi_set_max_tx_power(40); // 10 dBm, max is 20 dBm
 
 //----- do MQTT stuff ----------------------------------------------------------
 
