@@ -5,7 +5,7 @@
  * Created		: 14-May-2024
  * Tabsize		: 4
  * 
- * This Revision: $Id: main.cpp 1725 2025-03-07 11:10:39Z  $
+ * This Revision: $Id: main.cpp 1737 2025-03-16 11:28:24Z  $
  */
 
 /*
@@ -37,7 +37,6 @@
 #include <rom/rtc.h>            // Apache-2.0 license
 #include <soc/rtc_cntl_reg.h>   // Apache-2.0 license
 #include <driver/rtc_io.h>      // Apache-2.0 license
-#include <esp32/clk.h>          // Apache-2.0 license
 #include <esp_wifi.h>           // Apache-2.0 license
 
 //----- Arduino libraries
@@ -55,57 +54,56 @@
 #include "ota.h"
 
 /// version string published at startup.
-const char VERSION[] = "$Id: main.cpp 1725 2025-03-07 11:10:39Z  $ built " __DATE__ " " __TIME__;
+const char VERSION[] = "$Id: main.cpp 1737 2025-03-16 11:28:24Z  $ built " __DATE__ " " __TIME__;
 /*                      1...5...10....5...20....5...30....5...40...5...50....5...60 */
 //==============================================================================
 #pragma region Preferences
 
+#define PIN_AWAKE 23    // show that we are awake, e.g. for oscilloscope trigger
 
-#define BAT_R1 470  // from Vbat to ADC
-#define BAT_R2 470  // from ADC to GND
+//----- battery voltage measurement
+
+#define BAT_R1 470      // from Vbat to ADC
+#define BAT_R2 470      // from ADC to GND
+#define PIN_BATTERY 36  // ADC used to measure battery voltage. Arduino name: A0
 
 //----- serial output
-#define MY_BAUD_RATE 230400uL // 115200uL
+
+#define MY_BAUD_RATE 230400uL // was 115200uL
 
 //----- MQTT settings
 
 #define MQTT_BROKER "ha-server"
-
-#define SUBTOPIC_DATA "state"   // topic is soil/hostname/state
-#define SUBTOPIC_INFO "debug"
-#define SUBTOPIC_OTA "ota"
+#define SUBTOPIC_DATA   "state"   // topic is soil/hostname/state
+#define SUBTOPIC_INFO   "debug"
+#define SUBTOPIC_OTA    "ota"
 #define SUBTOPIC_CONFIG "config"
 
-// measure voltage on which GPIO pins?
+//----- sensor pin connections
 
- #define PIN_AWAKE 23    // show that we are awake, e.g. for oscilloscope trigger
- #define PIN_BATTERY 36  // ADC used to measure battery voltage. Arduino name: A0
-
- /// connect these GPIO to sensor outputs
- const int pins_sensor[] = { 
+/// connect these GPIO to sensor outputs
+const int pins_sensor[] = { 
     39,     // GPIO 39 = ADC1_3 = Arduino A3
     34,     // GPIO 34 = ADC1_6 = Arduino A6
     35,     // GPIO 35 = ADC1_7 = Arduino A7
     32      // GPIO 32 = ADC1_4 = Arduino A4
- //  33      // GPIO 33 = ADC1_5 = Arduino A5
     };   
 
  /// connect these GPIO to sensor VCC
- const int pins_power[]  = { 
-    25,     // GPIO 25=ADC2_8
-    26,     // GPIO 26=ADC2_9
-    27,     // GPIO 27=ADC2_7
-    4       // GPIO 4=ADC2_0
- //  23,     //     
+const int pins_power[]  = { 
+    25,     // GPIO 25 = ADC2_8
+    26,     // GPIO 26 = ADC2_9
+    27,     // GPIO 27 = ADC2_7
+    4       // GPIO 4  = ADC2_0
     };    
 
-const size_t NCHANNELS = sizeof pins_sensor / sizeof pins_sensor[0];    ///< no of sensor channels
+const size_t NCHANNELS = sizeof pins_sensor / sizeof pins_sensor[0];    // no of sensor channels
 
 /// max expected ADC value in millivolts
 const unsigned ADC_RANGE_MV = 3000;
-/// unconncted input with pulldown
+/// max voltage from an unconnected input with pulldown
 const unsigned ALMOST_ZERO_MV = 400;
-/// must have seen this much swing to consider measurement valid
+/// must have seen this much swing to consider measurement valid, 5% of range
 const unsigned MIN_SENSOR_DYNAMIC_RANGE = ADC_RANGE_MV / 20;
 
 //------------------------------------------------------------------------------
@@ -123,9 +121,9 @@ const unsigned MIN_SENSOR_DYNAMIC_RANGE = ADC_RANGE_MV / 20;
 
 struct Configuration {
     unsigned signature;
-    unsigned meas_interval;     //< interval between measurements, in seconds    
-    unsigned info_interval;     //< interval between debug reports, in seconds
-    unsigned powerup;           //< time to power up sensors, in milliseconds
+    unsigned meas_interval;     // interval between measurements [s]
+    unsigned info_interval;     // interval between debug reports [s]
+    unsigned powerup;           // time to power up sensors [ms]
 };
 
 const Configuration defaultConfiguration = {
@@ -163,6 +161,7 @@ void setConfiguration( const char* json )
     Uptime and longer intervals are specified in seconds
     an int32_t can represent up to 68 years in seconds
 */
+//#define QUICK
 
 #ifdef QUICK    // shortened timing, for debugging only, may be defined in myauth.h
  // minimum time between refreshes
@@ -177,47 +176,49 @@ void setConfiguration( const char* json )
   // ignore the first few minutes, before the user places the sensor in the soil
   const unsigned long IGNORE_FIRST = 5 MINUTES;
 #endif
+#define CYCLES_PER_FRESH_CONNECT (1 DAYS / SOIL_REPORT_INTERVAL_S)
 
 #define SENSOR_RAMPUP_MS config.powerup
+
+#define DNS_WAIT_MS 100     // how long to wait for DNS response [ms]
+#define DNS_RETRY   5       // how many times to retry DNS request
+
+#define MQTT_WAIT_MS   100  // how long to wait for connect to MQTT broker [ms]
+#define MQTT_RETRY      5   // how many times to retry connect to MQTT broker
 
 //------------------------------------------------------------------------------
 #pragma endregion
 //==============================================================================
 #pragma region Global variables
 
-bool request_ota = false;       ///< flag, enable OTA and don't go to sleep
-bool firstRun = false;          ///< flag, this is not waking up from deep sleep
-
-String hostname;
-String mqttbase;
-String topic_ota;
-String topic_config;
+bool request_ota = false;       // flag, enable OTA and don't go to sleep
+bool firstRun = false;          // flag, this is not waking up from deep sleep
 
 //----- timing measurements to be reported
 /// took this long to connect to MQTT broker [ms]
-uint32_t t_mqtt;                
-/// took this long to look up MQTT broker hostname
-uint32_t t_dns;                 
-/// how long were we awake? Remember in RTC memory and report next time
-RTC_DATA_ATTR unsigned wake_duration;
-/// how long did it take to disconnect from WiFi AP? Remember in RTC memory and report next time
-RTC_DATA_ATTR unsigned disconnect_duration;
+uint32_t dur_mqtt;                
+/// took this long to look up MQTT broker hostname [ms]
+uint32_t dur_dns;                 
+/// how long were we awake? Remember in RTC memory and report next time [ms]
+RTC_DATA_ATTR unsigned dur_wake;
+/// how long did it take to disconnect from WiFi AP? Remember in RTC memory and report next time [ms]
+RTC_DATA_ATTR unsigned dur_disconnect;
 
 #ifdef PIN_BATTERY
- int battery_mV;                ///< measured battery voltage, in millivolts
+ unsigned battery_mV;                ///< measured battery voltage, in millivolts
 #endif
 
 String Uptime;                  ///< total uptime, including periods of sleep
 
 /// count # of times we have woken up from sleep
-RTC_DATA_ATTR uint64_t bootCount;       
+RTC_DATA_ATTR unsigned bootCount;       
 /// last time battery etc was reported
 RTC_DATA_ATTR time_t lastDebugReport_s; 
 
 //----- soil moisture measurements
-/// absolute measurements of sensor output, in mV
+/// absolute measurements of sensor output [mV]
 int sensor_abs[NCHANNELS];  
-/// sensor output relative to observed range, in promille
+/// sensor output relative to observed range [promille]
 int sensor_rel[NCHANNELS];  
 
 // remember min/max values beyond sleep
@@ -245,10 +246,42 @@ String formatUptime( time_t now )
     long hours = seconds / (60 * 60L);
     seconds -= hours * (60 * 60L);
     long minutes = seconds / 60;
-    seconds -= minutes * 60;
-    // like "999d 23:59:59"
-    snprintf( buf, sizeof buf, "%ldd %ld:%02ld:%02ld", days, hours, minutes, seconds );
+    // like "999d 23:59"
+    snprintf( buf, sizeof buf, "%ldd %ld:%02ld", days, hours, minutes );
     return String(buf);
+}
+
+
+/**
+ * @brief get IP address from server name, via DNS
+ * 
+ * @param servername    name to be looked up
+ * @param ip            returns IP address here
+ * @return true         if lookup successful
+ * @return false        if failed
+ * 
+ * As a side effect update `dur_dns` global variable
+ */
+bool dns_lookup( const char* servername, IPAddress& ip )
+{
+    uint32_t t_begin, t_end;
+    int ret;
+
+    t_begin = millis();
+    for (int i=0; i<DNS_RETRY; i++) {
+        ret=WiFi.hostByName(servername, ip); 
+        if (1 == ret) {
+            t_end = millis();
+            dur_dns = t_end - t_begin;       
+            log_i("'%s' is %s (" ANSI_BRIGHT_MAGENTA "%u" ANSI_RESET " ms)",
+                servername, ip.toString().c_str(), dur_dns );
+            return true;
+        } else {
+            log_e("failed DNS lookup, error %d",ret);
+            delay(DNS_WAIT_MS);   
+        }
+    }
+    return false;
 }
 
 //------------------------------------------------------------------------------
@@ -268,7 +301,6 @@ char msgbuf[256];
 {
     JsonDocument doc;
 
-    doc["FreeHeap"] = ESP.getFreeHeap();   
     doc["Boot"] = bootCount;
 #ifdef PIN_BATTERY
     doc["Battery"] = battery_mV;
@@ -294,11 +326,11 @@ const char* state_to_json()
         vabs.add(sensor_abs[i]);
         vrel.add(sensor_rel[i]);
     }
-    if (wake_duration)
-        doc["wake"] = wake_duration;
+    if (dur_wake)
+        doc["wake"] = dur_wake;
 
-    if (disconnect_duration)
-        doc["dis"] = disconnect_duration;
+    if (dur_disconnect)
+        doc["dis"] = dur_disconnect;
 
     serializeJson(doc,msgbuf);
     return msgbuf;
@@ -316,8 +348,8 @@ const char* wifi_to_json()
    
     reportWifi( doc );
 
-    doc["mqtt"] = t_mqtt;
-    doc["dns"] = t_dns;
+    doc["mqtt"] = dur_mqtt;
+    doc["dns"] = dur_dns;
 
     serializeJson(doc,msgbuf);
     return msgbuf;
@@ -329,12 +361,18 @@ const char* wifi_to_json()
 //==============================================================================
 #pragma region MQTT stuff
 
+
+String mqttBaseTopic;
+String mqttClientName;
+String mqttTopic_ota;
+String mqttTopic_config;
+
+
 void active_wait( unsigned ms )
 {
     while (ms--) {
         delay(1);
         if (mqttClient.connected()) mqttClient.loop();
-        yield();
     }
 }
 
@@ -346,19 +384,19 @@ void active_wait( unsigned ms )
  * @param payload  MQTT payload (array of bytes)
  * @param length   length of payload
  */
-void subscribeCallback(char* topic, byte* payload, unsigned length) 
+void subscribeCallback( const char* topic, byte* payload, unsigned length) 
 {
-    String spay(payload,length);
+    String sPayload(payload,length);
 
     log_i( "MQTT: received '" ANSI_BLUE "%s" ANSI_RESET "' =\n '" ANSI_BOLD "%s" ANSI_RESET "'",
-        topic, spay.c_str() );
+        topic, sPayload.c_str() );
 
-    if (0==strcmp( topic, topic_ota.c_str())) {
-        if ( (spay=="on") || (spay=="ON") || (spay=="1") ) {
+    if ( mqttTopic_ota==topic ) {
+        if ( (sPayload=="on") || (sPayload=="ON") || (sPayload=="1") ) {
             request_ota = true;
         }
-    } else if (0==strcmp( topic, topic_config.c_str())) {
-        setConfiguration( spay.c_str() );
+    } else if ( mqttTopic_config==topic ) {
+        setConfiguration( sPayload.c_str() );
     }
 }
 
@@ -366,38 +404,27 @@ void subscribeCallback(char* topic, byte* payload, unsigned length)
 /**
  * @brief Connect to MQTT broker
  * 
- * @returns true if connected
+ * @returns true    if connected
  */
 bool mqttConnect() 
 {
-    unsigned nAttempts=0;
     uint32_t t_begin, t_end;
-    const char* clientName = hostname.c_str();
-
-    log_i("connecting as '%s' to broker '%s'", clientName, MQTT_BROKER );
-
-    topic_ota = mqttbase + SUBTOPIC_OTA;
-    topic_config = mqttbase + SUBTOPIC_CONFIG;
+    log_i("connecting as '%s' to broker '%s'", mqttClientName.c_str(), MQTT_BROKER );
 
     t_begin = millis();
-    int waitms = 100;
-    for (int i=0; i<10; i++) {
+    for (int i=0; i<MQTT_RETRY; i++) {
         mqttClient.loop(); yield();
-    	if (mqttClient.connect(clientName)) {
+    	if (mqttClient.connect(mqttClientName.c_str())) {
             t_end = millis();
-            t_mqtt = t_end - t_begin;
-
-    		log_i("connected after %u ms", t_mqtt );
-
-            mqttClient.subscribe( topic_ota.c_str() );
-            mqttClient.subscribe( topic_config.c_str() );
-
+            dur_mqtt = t_end - t_begin;
+    		log_i("connected after %u ms", dur_mqtt );
+            mqttClient.subscribe( mqttTopic_ota.c_str() );
+            mqttClient.subscribe( mqttTopic_config.c_str() );
             return true;
     	} else {
             int st = mqttClient.state();
     		log_e("failed %d, rc=%d", i, st);
-            delay(waitms);
-            //waitms *= 2;
+            delay(MQTT_WAIT_MS);
     	}
     }
     log_e( ANSI_RED "Could not connect to MQTT" ANSI_RESET );
@@ -425,73 +452,15 @@ void mqttPublish( const char* subtopic, const char* message, bool retain=false )
 	if (!mqttClient.connected()) return;
     yield(); mqttClient.loop(); yield();
 
-    String topic = mqttbase + subtopic;
+    String topic = mqttBaseTopic + subtopic;
     if (!mqttReconnect()) return;
 	if (mqttClient.publish(topic.c_str(), message, (boolean)retain)) {
-        log_i("publish '%s' =\n '%s'", topic.c_str(), message ? message : "NULL" );
+        log_i("publish '" ANSI_WHITE "%s" ANSI_RESET "' =\n '" ANSI_WHITE "%s" ANSI_RESET "'", 
+            topic.c_str(), message ? message : "NULL" );
 	} else {
 		log_e("publish " ANSI_BRIGHT_RED "fail" ANSI_RESET);
 	}
-    active_wait(10);
-}
-
-
-/**
- * Publish via MQTT a JSON string with debug information: uptime, free heap etc.
- */
-void mqttPublishDebug()
-{
-    const char* json = debug_to_json();
-    mqttPublish(SUBTOPIC_INFO,json,true);
-}
-
-
-/**
- * Publish via MQTT a JSON string with measured values
- * 
- */
-void mqttPublishState()
-{
-    const char* json = state_to_json();
-    mqttPublish(SUBTOPIC_DATA,json);
-}
-
-
-/**
- * Publish via MQTT a JSON string with Wifi status
- * 
- */
-void mqttPublishWifi()
-{
-    const char* json = wifi_to_json();
-    mqttPublish("wifi",json);
-}
-
-
-bool dns_lookup( const char* servername, IPAddress& ip )
-{
-    uint32_t t_begin, t_end;
-    int ret;
-
-    t_begin = millis();
-    // try DNS multiple times
-    int waitms = 100;
-    // try DNS request 10 times
-    for (int i=0; i<10; i++) {
-        ret=WiFi.hostByName(servername, ip); 
-        if (1 == ret) {
-            t_end = millis();
-            t_dns = t_end - t_begin;       
-            log_i("DNS: '%s' is %s, took " ANSI_BRIGHT_MAGENTA "%u" ANSI_RESET " ms",
-                servername, ip.toString().c_str(), t_dns );
-            return true;
-        } else {
-            log_e("failed DNS lookup, error %d",ret);
-            delay(waitms);
-            //waitms *= 2;            
-        }
-    }
-    return false;
+    active_wait(100);
 }
 
 
@@ -500,20 +469,19 @@ bool dns_lookup( const char* servername, IPAddress& ip )
  */
 bool mqttSetup()
 {
-    uint32_t t_begin, t_end;
-
     // had some issues with slow DNS response. now doing DNS lookup as a separate step
     IPAddress ip;
-    t_begin = millis();
     if (!dns_lookup(MQTT_BROKER,ip)) return false;
-    t_end = millis();
-    t_dns = t_end - t_begin;
-    log_i("DNS: broker %s is %s (" ANSI_BRIGHT_MAGENTA "%u" ANSI_RESET " ms)", 
-        MQTT_BROKER, ip.toString().c_str(), t_dns );
     mqttClient.setServer(ip, 1883);
     mqttClient.setCallback(subscribeCallback);
-    mqttReconnect();
-    return true;
+
+    String hostname = WiFi.getHostname();
+    mqttClientName = hostname;
+    mqttBaseTopic = "soil/" + hostname + "/";
+    mqttTopic_ota = mqttBaseTopic + SUBTOPIC_OTA;
+    mqttTopic_config = mqttBaseTopic + SUBTOPIC_CONFIG;
+
+    return mqttReconnect();
 }
 
 //------------------------------------------------------------------------------
@@ -648,7 +616,7 @@ void setup()
 
     if ((config.signature != SIGNATURE) || (rtc_reset_reason != DEEPSLEEP_RESET))
         memcpy( &config, &defaultConfiguration, sizeof(Configuration) );
-
+  
     if (rtc_reset_reason != DEEPSLEEP_RESET) { // we did not wake up from deep sleep
         firstRun = true;
         memset( ranges, 0, sizeof ranges );
@@ -727,45 +695,40 @@ void setup()
 
 //----- turn on Wifi -----------------------------------------------------------
 
-    int wifiOk = setupWifi( !firstRun );
-    //esp_wifi_set_max_tx_power(40); // 10 dBm, max is 20 dBm
+    bool allow_reconnect = true;
+    if ((bootCount % CYCLES_PER_FRESH_CONNECT) == 0)  // once every 24h, do a fresh connect
+        allow_reconnect = false;
+    if (firstRun)
+        allow_reconnect = false;
+
+    int wifiOk = setupWifi( allow_reconnect );
 
 //----- do MQTT stuff ----------------------------------------------------------
 
     if (wifiOk) {
-
-        hostname = WiFi.getHostname();
-        mqttbase = "soil/" + hostname + "/";
-
         if (mqttSetup()) {
 
-            if (firstRun)
-                mqttPublish("version",VERSION, true);
+            if (firstRun) mqttPublish("version",VERSION, true);
             
-            // report bat voltage etc at first round, and then every 12h or so
+                // report bat voltage etc at first round, and then every 12h or so
             if (firstRun || 
                 ( (time_t)(now_s - lastDebugReport_s) > INFO_REPORT_INTERVAL_S) 
             ) {
                 lastDebugReport_s = now_s;
-                mqttPublishDebug();
-            } else {
-                yield(); mqttClient.loop(); yield();
+                mqttPublish( SUBTOPIC_INFO, debug_to_json(), true );
             }
 
-            mqttPublishWifi();
+            mqttPublish( "wifi", wifi_to_json() );        
 
             if (!ignoreSensors) {   // ignore sensor readings for the first few minutes?
-                mqttPublishState();
+                mqttPublish( SUBTOPIC_DATA, state_to_json() );
             }
 
-            if (config_changed) {
+            if (config_changed) 
                 mqttPublish( SUBTOPIC_CONFIG, NULL, true );
-                active_wait(100);
-            }
 
             if (request_ota) {
                 mqttPublish( SUBTOPIC_OTA, NULL, true );
-                active_wait(100);
                 setupOTA(); 
             }
 
@@ -796,14 +759,14 @@ void setup()
     WiFi.mode(WIFI_OFF);
     yield();
     t_end = millis();
-    disconnect_duration = t_end - t_begin;
-    log_i("Wifi disconnect took " ANSI_BRIGHT_MAGENTA "%u" ANSI_RESET " ms", 
-        disconnect_duration );
+    dur_disconnect = t_end - t_begin;
+    log_i("Wifi disconnect (" ANSI_BRIGHT_MAGENTA "%u" ANSI_RESET " ms)", 
+        dur_disconnect );
 
     uint32_t t_setup_end = millis();
-    wake_duration = t_setup_end - t_setup_start;
-    log_i("Ran for " ANSI_BOLD "%u" ANSI_RESET " ms, going to sleep now.", 
-        wake_duration );
+    dur_wake = t_setup_end - t_setup_start;
+    Serial.printf("Ran for " ANSI_BOLD "%u" ANSI_RESET " ms, going to sleep now.\n", 
+        dur_wake );
     Serial.flush();
 
     esp_sleep_enable_timer_wakeup( SOIL_REPORT_INTERVAL_S * 1000000ull );

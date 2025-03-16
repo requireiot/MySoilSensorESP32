@@ -4,7 +4,7 @@
  * Created		: 9-Feb-2020
  * Tabsize		: 4
  * 
- * This Revision: $Id: MyWifi.cpp 1724 2025-03-05 09:28:44Z  $
+ * This Revision: $Id: MyWifi.cpp 1731 2025-03-11 12:20:21Z  $
  */
 
 /*
@@ -52,7 +52,7 @@
 /// allow automatic connection to Wifi AP on power up ?
 const bool ALLOW_AUTO_CONNECT_ON_START = false;
 /// allow automatic re-connection to Wifi AP using channed and BSSID from NVM?
-const bool ALLOW_AUTO_RECONNECT = false;
+const bool ALLOW_AUTO_RECONNECT = true;
 
 //----- external references
 
@@ -67,6 +67,8 @@ WiFiClient wifiClient;
 RTC_DATA_ATTR WifiState wifiState;
 
 static unsigned t_wifi_setup = 0;    // filled by setupWifi()
+
+static uint32_t t_start, t_connected, t_gotIP;
 
 enum connect_t { error=0, autoconnect, reconnect, freshconnect };
 static connect_t connectMode = connect_t::error;       // filled by setupWifi()
@@ -141,19 +143,28 @@ void reportWifi( JsonDocument& doc )
 
     doc["ch"] = wifiState.channel;   
     doc["RSSI"] = quality;
-    doc["ttc"] = t_wifi_setup;      // time to connect [ms]
+    doc["ttc"] = t_wifi_setup;              // time to connect to AP [ms]
     doc["mode"] = (int)connectMode;
+    doc["dhcp"] = t_gotIP - t_connected;    // time to get IP address [ms]
 }
 
 //----------------------------------------------------------------------------
-
 
 void onWiFiEvent(WiFiEvent_t event) 
 {
     switch(event) {
     	
+        case ARDUINO_EVENT_WIFI_READY:
+            log_i("WiFi ready");
+            break;
+
+        case ARDUINO_EVENT_WIFI_STA_START:
+            log_i("STA start");
+            break;
+
         case ARDUINO_EVENT_WIFI_STA_GOT_IP:
-            log_i("got IP ");
+            t_gotIP = millis();
+            log_i("got IP after %u ms", t_gotIP-t_start);
             break;
             
         case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
@@ -165,11 +176,16 @@ void onWiFiEvent(WiFiEvent_t event)
             break;
             
         case ARDUINO_EVENT_WIFI_STA_CONNECTED:
-            log_i("connected ");
+            t_connected = millis();
+            log_i("connected after %u ms", t_connected-t_start);
             break;
             
         case ARDUINO_EVENT_WIFI_STA_STOP:
-            log_i("stop ");
+            log_i("STA stop ");
+            break;
+
+        default:
+            log_i("WiFi event %d",(int)event);
             break;
     }    
 }
@@ -220,6 +236,73 @@ static bool _reconnectWifi()
 
 //----------------------------------------------------------------------------
 
+
+void scanNetworks()
+{
+    // WiFi.scanNetworks will return the number of networks found.
+    Serial.print("Scanning networks ... ");
+    int n = WiFi.scanNetworks();
+    Serial.println("Scan done");
+    if (n == 0) {
+        Serial.println("no networks found");
+    } else {
+        Serial.print(n);
+        Serial.println(" networks found");
+        Serial.println("Nr | SSID                             | RSSI | CH | Encryption");
+        for (int i = 0; i < n; ++i) {
+            // Print SSID and RSSI for each network found
+            Serial.printf("%2d",i + 1);
+            Serial.print(" | ");
+            Serial.printf("%-32.32s", WiFi.SSID(i).c_str());
+            Serial.print(" | ");
+            Serial.printf("%4d", WiFi.RSSI(i));
+            Serial.print(" | ");
+            Serial.printf("%2d", WiFi.channel(i));
+            Serial.print(" | ");
+            switch (WiFi.encryptionType(i))
+            {
+            case WIFI_AUTH_OPEN:
+                Serial.print("open");
+                break;
+            case WIFI_AUTH_WEP:
+                Serial.print("WEP");
+                break;
+            case WIFI_AUTH_WPA_PSK:
+                Serial.print("WPA");
+                break;
+            case WIFI_AUTH_WPA2_PSK:
+                Serial.print("WPA2");
+                break;
+            case WIFI_AUTH_WPA_WPA2_PSK:
+                Serial.print("WPA+WPA2");
+                break;
+            case WIFI_AUTH_WPA2_ENTERPRISE:
+                Serial.print("WPA2-EAP");
+                break;
+            case WIFI_AUTH_WPA3_PSK:
+                Serial.print("WPA3");
+                break;
+            case WIFI_AUTH_WPA2_WPA3_PSK:
+                Serial.print("WPA2+WPA3");
+                break;
+            case WIFI_AUTH_WAPI_PSK:
+                Serial.print("WAPI");
+                break;
+            default:
+                Serial.print("unknown");
+            }
+            Serial.println();
+            delay(10);
+        }
+    }
+    Serial.println("");
+    // Delete the scan result to free memory for code below.
+    WiFi.scanDelete();    
+}
+
+
+#define WIFI_TIMEOUT 5000uL
+
 /**
  * @brief  Try to connect to WiFi AP
  * 
@@ -228,35 +311,15 @@ static bool _reconnectWifi()
  */
 static bool _freshConnectWifi()
 {
-    const uint32_t timeout = 10000; // 20 seconds
-    wl_status_t ws;
-    unsigned t;
-
-    log_i("fresh connect, SSID='%s'",WIFI_SSID);
-    uint32_t t_start = millis();
-
+    //WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+    t_start = millis();
     WiFi.begin( WIFI_SSID, WIFI_PASSWORD );
-    yield();
-
-    while (!WiFi.isConnected()) {
-        ws = WiFi.status();
-        t = (unsigned)(millis() - t_start);
-        Serial.printf(" %3d\r",(int)(ws));
-        if (t > timeout) {
-            Serial.print("ERROR  ");
-            WiFi.disconnect();
-            delay( 1 );
-            WiFi.mode( WIFI_OFF );
-            return false;
-        }
-        delay(50);  // was 200
-    }
-    yield();
-    if (WiFi.isConnected()) {
-        log_i(" ok ");
+    uint8_t wf = WiFi.waitForConnectResult(WIFI_TIMEOUT); // 5 sec timeout
+    if (wf==WL_CONNECTED) {
+        log_i(ANSI_GREEN "WiFi connected" ANSI_RESET);
         return true;
     } else {
-        log_e("Wifi connect failed, status=%d ",WiFi.status());
+        log_e( ANSI_RED "WiFi connect failed, status=%d" ANSI_RESET, (int)wf);
         return false;
     }
 }
@@ -289,7 +352,8 @@ int setupWifi( bool allow_reconnect )
     WiFi.persistent( ALLOW_AUTO_CONNECT_ON_START );
     WiFi.mode(WIFI_STA);
     WiFi.setAutoReconnect(allow_reconnect);
-    yield();
+
+    // scanNetworks(); // TEST TEST TEST
 
     if (allow_reconnect) {
 //----- 1. check if Wifi has already been connected in the background
@@ -301,7 +365,7 @@ int setupWifi( bool allow_reconnect )
             connectMode = _reconnectWifi() ? connect_t::reconnect : connect_t::error;
         }
     }
-    if (!connectMode) {
+    if (connectMode==connect_t::error) {
 //----- 3. if all else has failed, let's try a fresh connection using SSID and password
         connectMode = _freshConnectWifi() ? connect_t::freshconnect : connect_t::error;
     }

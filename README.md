@@ -170,9 +170,15 @@ To perform an OTA firmware update,
 
 ## Debugging support
 
-The software prints a lot of logging messages to UART#2 (GPIO pins 16 and 17), 
+The software can print a lot of logging messages to UART#2 (GPIO pins 16 and 17), 
 to which I connect an optically isolated FTDI-style USB to serial module. This 
 was really helpful for understanding what goes on, and where delays occur.
+
+The logging messages are normally suppressed. To enable logging, edit `platformio.ini`, in the general `[env]` section or an `[env:xyz]` section for a specific device, to contain
+```
+build_flags = 
+  -D CORE_DEBUG_LEVEL=3
+```
 
 ## Power consumption and battery life
 
@@ -183,15 +189,14 @@ important for overall power consumption, so I investigated the wake time in some
 detail.
 
 I built several of these units, some connected directly to the Wifi access point 
-(a AVM Fritzbox 7530), and some via a Wifi repeater (a Fritz Repeater 1200ax), 
-over a distance of 3-5m, through a massive outer brick wall (or maybe through a 
+(a AVM Fritzbox 7530), and some via a Wifi repeater (a Fritzbox 7490 operating as a mesh repeater), over a distance of 3-5m, through a massive outer brick wall (or maybe through a 
 window).
 
-On average, the wake time is about **400 ms** for all units. Now and then, maybe 
-once or twice a day, the wake time is much larger, above **1000 ms**. This appears 
-to happen mostly when the Wifi access point has switched to a a different Wifi 
+On average, the wake time is about **1000 ms** for all units. Now and then, maybe 
+once or twice a day, the wake time is much larger, above **1500 ms**. This appeared
+to happen mostly when the Wifi access point had switched to a different Wifi 
 channel. When I configured my access point to use a fixed Wifi channel, these 
-long wake time events could no longer be observed.
+long wake time events became less frequent.
 
 ### Actual power consumption
 
@@ -199,11 +204,11 @@ These factors contribute to power consumption or battery drain,
 in decreasing order of importance:
 1. the self-discharge of the AAA batteries, according to [[1]](http://www.gammon.com.au/power), 
 about 35 µA or **0.84 mAh** per day 
+1. wake time with WiFi ON, 140 mA x ~600ms per wakeup or **0.56 mAh** per day
 1. deep sleep, at ~8 µA or **0.2 mAh** per day
-1. wake time with WiFi ON, 130 mA x ~600ms per wakeup or **0.52 mAh** per day
-1. wake time, with WiFi OFF, 30 mA x ~300ms per wakeup or **0.06 mAh** per day
+1. wake time, with WiFi OFF, 40 mA x ~600ms per wakeup or **0.16 mAh** per day
 
-This adds up to a charge of 87mC per wake period, which closely matches an actual measurement with a [Nordic Power Profiler](https://www.nordicsemi.com/Products/Development-hardware/Power-Profiler-Kit-2).
+This adds up to a charge of 106mC per wake period, which closely matches an actual measurement with a [Nordic Power Profiler](https://www.nordicsemi.com/Products/Development-hardware/Power-Profiler-Kit-2).
 
 We have brought the design to the point where overall power consumption is 
 dominated by the self-dischange of the Alkaline batteries, so there is no point 
@@ -227,9 +232,9 @@ made (processor, program flow, etc.), but also on external factors that I cannot
 control. For example, power consumption depends on wake time, which is the 
 aggregate of
 * the time between turning on sensor power, and measuring the sensor voltage -- 
-  I chose *100ms*, which appears to be enough for the sensor voltage to settle
+  I chose *150ms*, which appears to be enough for the sensor voltage to settle
 * the time to re-connect to the Wifi access point, using stored information 
-  about WiFi channel, SSID etc -- this takes about *160ms* most of the time, 
+  about WiFi channel, SSID etc -- this takes about *350-550* most of the time, 
   but sometimes can take as much as 2-3s
 * the time to look up the IP address for the MQTT broker, usually *20-40ms*
 * the time to connect to the MQTT broker, mostly *30ms*, but sometimes up to 
@@ -237,7 +242,7 @@ aggregate of
 * the time to send MQTT messages -- I can influence this, by deciding how much 
   information to send
 * the time to disconnect from the Wifi access point -- mostly about *20ms*, 
-  but sometimes as high as *130ms*, which I can't explain
+  but sometimes more than *100ms*, which I can't explain
 
 ### An almost easy project
 
@@ -255,5 +260,5 @@ time to get those fixed:
 ### Bad luck with channel 13
 
 When the WiFi router is set to channel 12 or 13, connection time is much higher 
-(>2000ms) than on WiFi channel 1-11 (200-300ms) ... didn't expect that, should 
+(>2000ms) than on WiFi channel 1-11 (300-500ms) ... didn't expect that, should 
 have read [this](https://olimex.wordpress.com/2021/12/10/avoid-wifi-channel-12-13-14-when-working-with-esp-devices/) before!
