@@ -4,7 +4,7 @@
  * Created		: 9-Feb-2020
  * Tabsize		: 4
  * 
- * This Revision: $Id: MyWifi.cpp 1731 2025-03-11 12:20:21Z  $
+ * This Revision: $Id: MyWifi.cpp 1739 2025-03-21 10:43:43Z  $
  */
 
 /*
@@ -41,18 +41,12 @@
 
 //----- constants and preferences
 
-/*
-    in my setup (Fritzbox 7390 + Mesh Repeater Fritzbox 7490), re-connecting
-    to the same WiFi channel and BSSID as during the previous wake cycle takes 
-    much LONGER (>1000ms) that a fresh connection using SSID, username
-    and password (400 ms). 
-    For some reason, the DNS lookup for the MQTT broker also takes longer 
-    (>1000ms vs 20ms), as does connecting to the MQTT broker (>1000ms vs 30ms)
-*/
 /// allow automatic connection to Wifi AP on power up ?
 const bool ALLOW_AUTO_CONNECT_ON_START = false;
 /// allow automatic re-connection to Wifi AP using channed and BSSID from NVM?
 const bool ALLOW_AUTO_RECONNECT = true;
+
+#define WIFI_TIMEOUT_MS 5000uL
 
 //----- external references
 
@@ -63,11 +57,8 @@ extern HardwareSerial DebugSerial;
 //----- local variables
 
 WiFiClient wifiClient;
-
 RTC_DATA_ATTR WifiState wifiState;
-
 static unsigned t_wifi_setup = 0;    // filled by setupWifi()
-
 static uint32_t t_start, t_connected, t_gotIP;
 
 enum connect_t { error=0, autoconnect, reconnect, freshconnect };
@@ -142,10 +133,10 @@ void reportWifi( JsonDocument& doc )
     }
 
     doc["ch"] = wifiState.channel;   
+    doc["dhcp"] = t_gotIP - t_connected;    // time to get IP address [ms]
+    doc["mode"] = (int)connectMode;
     doc["RSSI"] = quality;
     doc["ttc"] = t_wifi_setup;              // time to connect to AP [ms]
-    doc["mode"] = (int)connectMode;
-    doc["dhcp"] = t_gotIP - t_connected;    // time to get IP address [ms]
 }
 
 //----------------------------------------------------------------------------
@@ -199,7 +190,6 @@ void onWiFiEvent(WiFiEvent_t event)
  */
 static bool _reconnectWifi()
 {
-    const uint32_t timeout = 5000;      // 5 seconds
     uint32_t t1, t2;
     int wfs;
 
@@ -218,7 +208,7 @@ static bool _reconnectWifi()
             return false;
         }
 
-        if ((uint32_t)(millis() - t_start) > timeout) {
+        if ((uint32_t)(millis() - t_start) > WIFI_TIMEOUT_MS) {
             log_e( ANSI_BRIGHT_RED ANSI_BOLD "timeout ERROR  " ANSI_RESET );
             WiFi.disconnect();
             yield();
@@ -301,8 +291,6 @@ void scanNetworks()
 }
 
 
-#define WIFI_TIMEOUT 5000uL
-
 /**
  * @brief  Try to connect to WiFi AP
  * 
@@ -314,7 +302,7 @@ static bool _freshConnectWifi()
     //WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
     t_start = millis();
     WiFi.begin( WIFI_SSID, WIFI_PASSWORD );
-    uint8_t wf = WiFi.waitForConnectResult(WIFI_TIMEOUT); // 5 sec timeout
+    uint8_t wf = WiFi.waitForConnectResult(WIFI_TIMEOUT_MS); // 5 sec timeout
     if (wf==WL_CONNECTED) {
         log_i(ANSI_GREEN "WiFi connected" ANSI_RESET);
         return true;

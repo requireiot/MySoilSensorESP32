@@ -5,7 +5,7 @@
  * Created		: 14-May-2024
  * Tabsize		: 4
  * 
- * This Revision: $Id: main.cpp 1737 2025-03-16 11:28:24Z  $
+ * This Revision: $Id: main.cpp 1739 2025-03-21 10:43:43Z  $
  */
 
 /*
@@ -54,7 +54,7 @@
 #include "ota.h"
 
 /// version string published at startup.
-const char VERSION[] = "$Id: main.cpp 1737 2025-03-16 11:28:24Z  $ built " __DATE__ " " __TIME__;
+const char VERSION[] = "$Id: main.cpp 1739 2025-03-21 10:43:43Z  $ built " __DATE__ " " __TIME__;
 /*                      1...5...10....5...20....5...30....5...40...5...50....5...60 */
 //==============================================================================
 #pragma region Preferences
@@ -180,11 +180,11 @@ void setConfiguration( const char* json )
 
 #define SENSOR_RAMPUP_MS config.powerup
 
-#define DNS_WAIT_MS 100     // how long to wait for DNS response [ms]
-#define DNS_RETRY   5       // how many times to retry DNS request
+#define DNS_WAIT_MS   100   // how long to wait for DNS response [ms]
+#define DNS_RETRY       3   // how many times to retry DNS request
 
-#define MQTT_WAIT_MS   100  // how long to wait for connect to MQTT broker [ms]
-#define MQTT_RETRY      5   // how many times to retry connect to MQTT broker
+#define MQTT_WAIT_MS  100   // how long to wait for connect to MQTT broker [ms]
+#define MQTT_RETRY      3   // how many times to retry connect to MQTT broker
 
 //------------------------------------------------------------------------------
 #pragma endregion
@@ -203,6 +203,8 @@ uint32_t dur_dns;
 RTC_DATA_ATTR unsigned dur_wake;
 /// how long did it take to disconnect from WiFi AP? Remember in RTC memory and report next time [ms]
 RTC_DATA_ATTR unsigned dur_disconnect;
+/// how many times did we fail to connect, since last successful connection?
+RTC_DATA_ATTR unsigned lastCycleFailed;
 
 #ifdef PIN_BATTERY
  unsigned battery_mV;                ///< measured battery voltage, in millivolts
@@ -350,6 +352,7 @@ const char* wifi_to_json()
 
     doc["mqtt"] = dur_mqtt;
     doc["dns"] = dur_dns;
+    doc["fail"] = lastCycleFailed;
 
     serializeJson(doc,msgbuf);
     return msgbuf;
@@ -618,6 +621,7 @@ void setup()
         memcpy( &config, &defaultConfiguration, sizeof(Configuration) );
   
     if (rtc_reset_reason != DEEPSLEEP_RESET) { // we did not wake up from deep sleep
+        lastCycleFailed = 0;
         firstRun = true;
         memset( ranges, 0, sizeof ranges );
         for (int i=0; i<NCHANNELS; i++) ranges[i].vmin = ADC_RANGE_MV;
@@ -628,10 +632,11 @@ void setup()
     }
 
     request_ota = false;
-    bootCount++;
     uint32_t t_setup_start = millis();  // starts with 0 every time we wake up
     time_t now_s = time(NULL);          // persists across sleep episodes
+    if (bootCount==0) now_s=0;
     Uptime = formatUptime(now_s);
+    bootCount++;
     // ignore the first 5min or so of sensor readings, to give the op time to place the sensor
     bool ignoreSensors = (now_s < (IGNORE_FIRST / 1000uL) );
 
@@ -640,6 +645,7 @@ void setup()
     DebugSerial.setPins(16,17);
     DebugSerial.begin(MY_BAUD_RATE);
     DebugSerial.setDebugOutput(true);  
+    Serial2.setDebugOutput(true);
 
     Serial.println("========================================================");
 
@@ -662,8 +668,10 @@ void setup()
         (unsigned)ESP.getCpuFreqMHz() );
     Serial.printf( "  Flash:" ANSI_BOLD "%u" ANSI_RESET " K", 
         (unsigned)(ESP.getFlashChipSize() / 1024));
-    Serial.printf( "  Core:" ANSI_BOLD "%s" ANSI_RESET, 
-        esp_get_idf_version() );
+    Serial.printf("  SDK:" ANSI_BOLD "%s" ANSI_RESET, 
+        ESP.getSdkVersion() );
+//    Serial.printf("  Core:" ANSI_BOLD "%s" ANSI_RESET, 
+//        ESP.getCoreVersion() );
     Serial.println();
 
     Serial.printf( "Reset:" ANSI_RED ANSI_BOLD "%d" ANSI_RESET, 
@@ -674,8 +682,8 @@ void setup()
     Serial.printf( "  Battery " ANSI_BOLD "%d" ANSI_RESET " mV",
         battery_mV );
 #endif
-    Serial.printf( "  Time " ANSI_BRIGHT_BLUE "%ld" ANSI_RESET "s  Uptime %s", 
-        now_s, Uptime.c_str() );
+//    Serial.printf( "  Time " ANSI_BRIGHT_BLUE "%ld" ANSI_RESET "s  Uptime %s", 
+//        now_s, Uptime.c_str() );
     Serial.println();
 
 //----- measure sensors
@@ -699,6 +707,8 @@ void setup()
     if ((bootCount % CYCLES_PER_FRESH_CONNECT) == 0)  // once every 24h, do a fresh connect
         allow_reconnect = false;
     if (firstRun)
+        allow_reconnect = false;
+    if (lastCycleFailed)    
         allow_reconnect = false;
 
     int wifiOk = setupWifi( allow_reconnect );
@@ -734,9 +744,14 @@ void setup()
 
             mqttClient.disconnect();
             active_wait(10);
+
+            lastCycleFailed = 0;
         } else {
+            lastCycleFailed++;
             log_e("MQTT failed");
         }
+    } else {
+        lastCycleFailed++;
     }
 
 //----- wrap up basic setup ----------------------------------------------------
@@ -769,7 +784,8 @@ void setup()
         dur_wake );
     Serial.flush();
 
-    esp_sleep_enable_timer_wakeup( SOIL_REPORT_INTERVAL_S * 1000000ull );
+    unsigned sleeptime_s = lastCycleFailed ? 300 : SOIL_REPORT_INTERVAL_S;
+    esp_sleep_enable_timer_wakeup( sleeptime_s * 1000000ull );
 
     // signal end of wake phase (oscilloscope trigger)
 #ifdef PIN_AWAKE
