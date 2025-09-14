@@ -17,13 +17,15 @@
    SPDX-License-Identifier: MPL-2.0
 */
 
+/**
+ * @brief Convenience function to execute update-over-HTTP
+ */
+
 #include <HTTPUpdate.h>
 #include "ansi.h"
 #include "MyUpdate.h"
 
 extern HardwareSerial DebugSerial;
-#undef Serial
-#define Serial DebugSerial
 
 
 #define HTTP_UPDATE ANSI_BRIGHT_MAGENTA "HTTP Update" ANSI_RESET
@@ -38,30 +40,30 @@ void do_httpUpdate( const char* firmware_url )
     WiFiClient client;
 
     httpUpdate.onStart([]() {
-        Serial.printf(HTTP_UPDATE " started\n");
+        DebugSerial.printf(HTTP_UPDATE " started\n");
     });
 	httpUpdate.onEnd([]() {
-		Serial.println("\n" HTTP_UPDATE " end\n");
+		DebugSerial.println("\n" HTTP_UPDATE " end\n");
 	});
     httpUpdate.onError([](int err) {
-        Serial.printf(HTTP_UPDATE " fatal error code %d", err);
+        DebugSerial.printf(HTTP_UPDATE " fatal error code %d", err);
     });
 	httpUpdate.onProgress([](unsigned int progress, unsigned int total) {
-		Serial.printf("\r" HTTP_UPDATE " progress: %u%%", (100 * progress / total));
+		DebugSerial.printf("\r" HTTP_UPDATE " progress: %u%%", (100 * progress / total));
 	});
 
-    log_i("HTTP update from \n  '%s'", firmware_url);
+    log_i("HTTP update from \n  '" ANSI_BLUE "%s" ANSI_RESET "'", firmware_url);
     HTTPUpdateResult ret = httpUpdate.update(client, firmware_url);    
     switch (ret) {
       case HTTP_UPDATE_FAILED: 
-        Serial.printf(ANSI_BRIGHT_RED "HTTP_UPDATE_FAILED Error (%d): %s" ANSI_RESET "\n", 
+        DebugSerial.printf(ANSI_BRIGHT_RED "HTTP_UPDATE_FAILED Error (%d): %s" ANSI_RESET "\n", 
             httpUpdate.getLastError(), httpUpdate.getLastErrorString().c_str()); 
         break;
       case HTTP_UPDATE_NO_UPDATES: 
-        Serial.println("HTTP_UPDATE_NO_UPDATES"); 
+        DebugSerial.println("HTTP_UPDATE_NO_UPDATES"); 
         break;
       case HTTP_UPDATE_OK: 
-        Serial.println("HTTP_UPDATE_OK"); 
+        DebugSerial.println("HTTP_UPDATE_OK"); 
         break;
     }
 }

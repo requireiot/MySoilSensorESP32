@@ -1,14 +1,14 @@
 /**
- * @file        wifi.cpp
+ * @file        MyWifi.cpp
  * Author		: Bernd Waldmann
  * Created		: 9-Feb-2020
  * Tabsize		: 4
  * 
- * This Revision: $Id: MyWifi.cpp 1739 2025-03-21 10:43:43Z  $
+ * This Revision: $Id: MyWifi.cpp 1827 2025-09-14 20:54:44Z  $
  */
 
 /*
-   Copyright (C) 2022,2024 Bernd Waldmann
+   Copyright (C) 2022,2025 Bernd Waldmann
 
    This Source Code Form is subject to the terms of the Mozilla Public 
    License, v. 2.0. If a copy of the MPL was not distributed with this 
@@ -48,12 +48,6 @@ const bool ALLOW_AUTO_RECONNECT = true;
 
 #define WIFI_TIMEOUT_MS 5000uL
 
-//----- external references
-
-extern HardwareSerial DebugSerial;
-#undef Serial
-#define Serial DebugSerial
-
 //----- local variables
 
 WiFiClient wifiClient;
@@ -87,30 +81,6 @@ static void _fillConfig()
     wifiState.subnet = WiFi.subnetMask();
     wifiState.dns = WiFi.dnsIP();
     wifiState.make_valid();
-}
-
-//----------------------------------------------------------------------------
-
-/**
- * @brief Print current Wifi connection parameters to debug console
- */
-static void _printConfig() 
-{
-    Serial.print( "\n" ANSI_WHITE );
-    Serial.print("  BSSID   : ");
-    for (int i=0; i<6; i++) Serial.printf("%02X ", wifiState.bssid[i]);
-    Serial.printf("\tChannel : %d\n", wifiState.channel ); 
-    Serial.printf("  IP      : %s", iptoa(wifiState.ip) ); 
-    Serial.printf("\tGateway : %s\n", iptoa(wifiState.gateway) ); 
-    Serial.printf("  Subnet  : %s", iptoa(wifiState.subnet) ); 
-    Serial.printf("\t\tDNS     : %s\n", iptoa(wifiState.dns) ); 
-    Serial.printf("  Hostname: %s",WiFi.getHostname());
-    uint8_t mac[6];
-    WiFi.macAddress(mac);
-    Serial.printf("  MAC %02X:%02X:%02X:%02X:%02X:%02X\n",
-        mac[0],mac[1],mac[2],mac[3],mac[4],mac[5]);
-
-    Serial.print(ANSI_RESET);
 }
 
 //----------------------------------------------------------------------------
@@ -226,71 +196,6 @@ static bool _reconnectWifi()
 
 //----------------------------------------------------------------------------
 
-
-void scanNetworks()
-{
-    // WiFi.scanNetworks will return the number of networks found.
-    Serial.print("Scanning networks ... ");
-    int n = WiFi.scanNetworks();
-    Serial.println("Scan done");
-    if (n == 0) {
-        Serial.println("no networks found");
-    } else {
-        Serial.print(n);
-        Serial.println(" networks found");
-        Serial.println("Nr | SSID                             | RSSI | CH | Encryption");
-        for (int i = 0; i < n; ++i) {
-            // Print SSID and RSSI for each network found
-            Serial.printf("%2d",i + 1);
-            Serial.print(" | ");
-            Serial.printf("%-32.32s", WiFi.SSID(i).c_str());
-            Serial.print(" | ");
-            Serial.printf("%4d", WiFi.RSSI(i));
-            Serial.print(" | ");
-            Serial.printf("%2d", WiFi.channel(i));
-            Serial.print(" | ");
-            switch (WiFi.encryptionType(i))
-            {
-            case WIFI_AUTH_OPEN:
-                Serial.print("open");
-                break;
-            case WIFI_AUTH_WEP:
-                Serial.print("WEP");
-                break;
-            case WIFI_AUTH_WPA_PSK:
-                Serial.print("WPA");
-                break;
-            case WIFI_AUTH_WPA2_PSK:
-                Serial.print("WPA2");
-                break;
-            case WIFI_AUTH_WPA_WPA2_PSK:
-                Serial.print("WPA+WPA2");
-                break;
-            case WIFI_AUTH_WPA2_ENTERPRISE:
-                Serial.print("WPA2-EAP");
-                break;
-            case WIFI_AUTH_WPA3_PSK:
-                Serial.print("WPA3");
-                break;
-            case WIFI_AUTH_WPA2_WPA3_PSK:
-                Serial.print("WPA2+WPA3");
-                break;
-            case WIFI_AUTH_WAPI_PSK:
-                Serial.print("WAPI");
-                break;
-            default:
-                Serial.print("unknown");
-            }
-            Serial.println();
-            delay(10);
-        }
-    }
-    Serial.println("");
-    // Delete the scan result to free memory for code below.
-    WiFi.scanDelete();    
-}
-
-
 /**
  * @brief  Try to connect to WiFi AP
  * 
@@ -341,8 +246,6 @@ int setupWifi( bool allow_reconnect )
     WiFi.mode(WIFI_STA);
     WiFi.setAutoReconnect(allow_reconnect);
 
-    // scanNetworks(); // TEST TEST TEST
-
     if (allow_reconnect) {
 //----- 1. check if Wifi has already been connected in the background
         if (ALLOW_AUTO_CONNECT_ON_START && (WiFi.waitForConnectResult(300) == WL_CONNECTED)) {
@@ -377,7 +280,6 @@ int setupWifi( bool allow_reconnect )
 #endif
 
     _fillConfig();  // remember successful connection parameters
-    //_printConfig();
     return int(connectMode);
 }
 

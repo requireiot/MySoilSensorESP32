@@ -5,7 +5,7 @@
  * Created		: 14-May-2024
  * Tabsize		: 4
  * 
- * This Revision: $Id: main.cpp 1826 2025-09-14 15:12:17Z  $
+ * This Revision: $Id: main.cpp 1827 2025-09-14 20:54:44Z  $
  */
 
 /*
@@ -58,7 +58,7 @@
 
 
 /// version string published at startup.
-const char VERSION[] = "$Id: main.cpp 1826 2025-09-14 15:12:17Z  $ built " __DATE__ " " __TIME__;
+const char VERSION[] = "$Id: main.cpp 1827 2025-09-14 20:54:44Z  $ built " __DATE__ " " __TIME__;
 
 //==============================================================================
 #pragma region Preferences
@@ -255,8 +255,6 @@ RTC_DATA_ATTR SensorRange ranges[NCHANNELS];
 PubSubClient mqttClient(wifiClient);
 
 HardwareSerial DebugSerial(2);     // on ESP32, we use UART#2 (gpio 16,17) for debug outputs
-#undef Serial
-#define Serial DebugSerial
 
 //------------------------------------------------------------------------------
 #pragma endregion
@@ -640,48 +638,6 @@ void poweroffSensors()
 //------------------------------------------------------------------------------
 #pragma endregion
 //==============================================================================
-#pragma region HTTP update
-/*
-#include <HTTPUpdate.h>
-
-#define HTTP_UPDATE ANSI_BRIGHT_MAGENTA "HTTP Update" ANSI_RESET
-
-void do_httpUpdate( const char* firmware_url )
-{
-    WiFiClient client;
-
-    httpUpdate.onStart([]() {
-        Serial.printf(HTTP_UPDATE " started\n");
-    });
-	httpUpdate.onEnd([]() {
-		Serial.println("\n" HTTP_UPDATE " end\n");
-	});
-    httpUpdate.onError([](int err) {
-        Serial.printf(HTTP_UPDATE " fatal error code %d", err);
-    });
-	httpUpdate.onProgress([](unsigned int progress, unsigned int total) {
-		Serial.printf("\r" HTTP_UPDATE " progress: %u%%", (100 * progress / total));
-	});
-
-    log_i("HTTP update from \n  '%s'", firmware_url);
-    HTTPUpdateResult ret = httpUpdate.update(client, firmware_url);    
-    switch (ret) {
-      case HTTP_UPDATE_FAILED: 
-        Serial.printf(ANSI_BRIGHT_RED "HTTP_UPDATE_FAILED Error (%d): %s" ANSI_RESET "\n", 
-            httpUpdate.getLastError(), httpUpdate.getLastErrorString().c_str()); 
-        break;
-      case HTTP_UPDATE_NO_UPDATES: 
-        Serial.println("HTTP_UPDATE_NO_UPDATES"); 
-        break;
-      case HTTP_UPDATE_OK: 
-        Serial.println("HTTP_UPDATE_OK"); 
-        break;
-    }
-}
-*/
-//------------------------------------------------------------------------------
-#pragma endregion
-//==============================================================================
 #pragma region Arduino standard functions
 
 /**
@@ -729,9 +685,9 @@ void setup()
     DebugSerial.setPins(16,17);
     DebugSerial.begin(MY_BAUD_RATE);
     DebugSerial.setDebugOutput(true);  
-    Serial2.setDebugOutput(true);
+    DebugSerial.setDebugOutput(true);
 
-    Serial.println("========================================================");
+    DebugSerial.println("====================================================");
 
 //----- measure battery voltage in mV, for later reporting via MQTT
 
@@ -746,30 +702,33 @@ void setup()
 
 //----- report environment -----------------------------------------------------
 
-    Serial.printf( "Chip:" ANSI_BOLD "%s" ANSI_RESET, 
-        ESP.getChipModel() );
-    Serial.printf( " at " ANSI_BOLD "%u" ANSI_RESET " MHz",
-        (unsigned)ESP.getCpuFreqMHz() );
-    Serial.printf( "  Flash:" ANSI_BOLD "%u" ANSI_RESET " K", 
-        (unsigned)(ESP.getFlashChipSize() / 1024));
-    Serial.printf("  SDK:" ANSI_BOLD "%s" ANSI_RESET, 
-        ESP.getSdkVersion() );
-//    Serial.printf("  Core:" ANSI_BOLD "%s" ANSI_RESET, 
-//        ESP.getCoreVersion() );
-    Serial.println();
-
-    Serial.printf( "Reset:" ANSI_RED ANSI_BOLD "%d" ANSI_RESET, 
-        rtc_reset_reason );
-    Serial.printf( "  Heap:" ANSI_BOLD "%d" ANSI_RESET, 
-        ESP.getFreeHeap() );
+    log_i( 
+        "Chip:" ANSI_BOLD "%s" ANSI_RESET
+        " at " ANSI_BOLD "%u" ANSI_RESET " MHz"
+        "  Flash:" ANSI_BOLD "%u" ANSI_RESET " K"
+        , 
+        ESP.getChipModel(),
+        (unsigned)ESP.getCpuFreqMHz(),
+        (unsigned)(ESP.getFlashChipSize() / 1024)
+    );
+    log_i(
+        "SDK:" ANSI_BOLD "%s" ANSI_RESET
+        "  Arduino " ANSI_BOLD "%d.%d.%d" ANSI_RESET
+        ,
+        ESP.getSdkVersion(),
+        ESP_ARDUINO_VERSION_MAJOR, ESP_ARDUINO_VERSION_MINOR, ESP_ARDUINO_VERSION_PATCH
+    );
+    log_i(
+        "Reset:" ANSI_RED ANSI_BOLD "%d" ANSI_RESET
+        "  Heap:" ANSI_BOLD "%d" ANSI_RESET
+        ,
+        rtc_reset_reason,
+        ESP.getFreeHeap()
+    );
 #ifdef PIN_BATTERY
-    Serial.printf( "  Battery " ANSI_BOLD "%d" ANSI_RESET " mV",
+    log_i( "Battery " ANSI_BOLD "%d" ANSI_RESET " mV",
         battery_mV );
 #endif
-    Serial.println();
-
-    Serial.print("FIRMWARE_NAME=");
-    Serial.println(FIRMWARE_NAME);
 
 //----- measure sensors
 
@@ -845,7 +804,7 @@ void setup()
     );
 
     if (request_ota) {
-        Serial.print("OTA enabled. ");
+        log_i("OTA enabled. ");
         return;
     }
     if (request_reset) {
@@ -872,9 +831,9 @@ void setup()
 
     uint32_t t_setup_end = millis();
     dur_wake = t_setup_end - t_setup_start;
-    Serial.printf("Ran for " ANSI_BOLD "%u" ANSI_RESET " ms, going to sleep now.\n", 
+    DebugSerial.printf("Ran for " ANSI_BOLD "%u" ANSI_RESET " ms, going to sleep now.\n", 
         dur_wake );
-    Serial.flush();
+    DebugSerial.flush();
 
     unsigned sleeptime_s = lastCycleFailed ? 300 : SOIL_REPORT_INTERVAL_S;
     esp_sleep_enable_timer_wakeup( sleeptime_s * 1000000ull );
@@ -895,7 +854,7 @@ void loop()
     if (!request_ota) return;
     if (loopWifi()) return;
 	ArduinoOTA.handle();
-    Serial.print('.');
+    DebugSerial.print('.');
 
     delay(1000);
 }
