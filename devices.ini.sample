@@ -1,0 +1,19 @@
+# ESP32-S Module, upload via OTA
+
+; esp32-C  esp32-2E26E0
+[env:esp32-C-ota]
+extends = ota
+upload_port = 192.168.164.54
+custom_hostname = esp32-2E26E0
+
+; esp32-H  esp32-DE28D0
+[env:esp32-H-ota]
+extends = ota
+upload_port = 192.168.164.63
+custom_hostname = esp32-DE28D0
+
+; esp32-K  esp32-6D82D0
+[env:esp32-K-ota]
+extends = ota
+upload_port = 192.168.164.67
+custom_hostname = esp32-6D82D0

@@ -16,6 +16,8 @@ This is part of my home automation setup. For details, see my [blog](https://req
 - [Firmware](#firmware)
 - [MQTT messages](#mqtt-messages)
 - [Over-the-air update](#over-the-air-update)
+  - ['Classic' OTA firmware update](#classic-ota-firmware-update)
+  - [OTA firmware download from a HTTP server](#ota-firmware-download-from-a-http-server)
 - [Debugging support](#debugging-support)
 - [Power consumption and battery life](#power-consumption-and-battery-life)
   - [Wake time](#wake-time)
@@ -113,10 +115,10 @@ a Platformio project.
 In folder `src/`, rename file `myauth_sample.h` to `myauth.h` and enter your 
 Wifi SSID and password.
 
-Edit file `platformio.ini` and enter the COM port and IP address for your 
-environment. I built multiple units and wanted to update each of them over-the-air, 
-so I needed a separate entry for each in `platformio.ini`, specifying each 
-IP address as assigned by my DHCP server.
+In the top folder, rename file `devices.ini.sample` to `devices.ini` and enter the hostnames and IP addresses for your environment. I built multiple units and wanted to update each of them over-the-air, so I needed a separate entry for each, specifying each IP address as assigned by my DHCP server.
+
+Edit file `platformio.ini` and enter the COM port for your 
+environment. 
 
 I used a 7x9 cm prototype board for ESP32 and ESP8266 boards, cut to fit inside 
 a 100x60x25 mm plastic case. The soil sensors are connected via cables with an 
@@ -138,7 +140,7 @@ The device publishes to MQTT topics that include its own hostname:
 - to <code>soil/__hostname__/wifi</code> it publishes a JSON string with some 
   performance metrics, such as Wifi quality, the time needed to connect to the 
   Wifi access point, etc., once every hour 
-- it subscribes to <code>soil/__hostname__/ota</code> to enable over-the-air 
+- it subscribes to <code>soil/__hostname__/cmd</code> to enable over-the-air 
   updates (see below)
 - it subscribes to <code>soil/__hostname__/config</code> to receive a JSON-format 
   string enable to change some operating parameters (see source code for details)
@@ -150,23 +152,45 @@ For example, my device has the hostname `esp32-D80270`, so it will publish to
 
 The device supports OTA firmware updates, despite the fact that it is in deep 
 sleep most of the time. How? When it wakes up, it subscribes to MQTT topic 
-<code>soil/__hostname__/ota</code> (see above), and if it finds a retained message 
-with the payload of `1` or `ON`, it enables ArduinoOTA and waits for an upload 
-of new firmware, instead of going to sleep. It also deletes the topic to 
-acknowledge that it has received the command. 
+<code>soil/_hostname_/cmd</code> (see above).
+
+### 'Classic' OTA firmware update
+
+When the device wakes up, and it finds a retained MQTT message <code>soil/_hostname_/cmd</code> with the payload of `ota`, it enables ArduinoOTA and waits for an upload of new firmware, instead of going to sleep. 
+It also deletes the topic to acknowledge that it has received the command. 
 
 To perform an OTA firmware update,
 1. compile your code for the target that has "-ota" in its name (look at 
    `platformio.ini` and adjust the IP address or device hostname to match your 
    conguration)
-1. publish a retained message for topic <code>soil/__hostname__/ota</code> with 
-   the payload of 'ON' For my device `esp32-D80270`, I run the following shell 
+1. publish a retained message for topic <code>soil/_hostname_/cmd</code> with 
+   a payload of `ota` For my device `esp32-D80270`, I run the following shell 
    comand on the home automation server: <br> 
- `mosquitto_pub -r -t "soil/esp32-D80270/ota" -m "ON"`
+ `mosquitto_pub -r -t "soil/esp32-D80270/cmd" -m "ota"`
 1. wait for the item to disappear. I watch it with a tool like 
    [MQTT Explorer](https://mqtt-explorer.com/), or run this shell command 
-   repeatedly <br/> `mosquitto_sub -t "soil/esp32-D80270/ota"`  
+   repeatedly <br/> `mosquitto_sub -t "soil/esp32-D80270/cmd"`  
 1. upload your firmware via Platformio
+
+### OTA firmware download from a HTTP server
+
+When the device wakes up, and it finds a retained MQTT message <code>soil/_hostname_/cmd</code> with the payload of `update`, it attempts to download a new firmware file named <code>_hostname_-firmware.bin</code> from a HTTP server on the local network. The server name can be configured in source code. After a successful download, it will install the new firmware and the restart. It also deletes the topic to 
+acknowledge that it has received the command. 
+
+To perform this kind of OTA firmware update,
+1. compile your code for the target that has "-ota" in its name (look at 
+   `platformio.ini` and adjust the IP address or device hostname to match your 
+   conguration)
+1. copy the `firmware.bin` file to the HTTP server, and rename it to <code>_hostname_-firmware.bin</code>. For my device `esp32-D80270`, I renamed `firmware.bin` to `esp32-D80270-firmware.bin`. This is done automatically if you have the `extra_scripts = upload_to_http.py` line in your `devices.ini`
+1. publish a retained message for topic <code>soil/_hostname_/cmd</code> with 
+   the payload of `upload` For my device `esp32-D80270`, I run the following shell 
+   comand on the home automation server: <br> 
+ `mosquitto_pub -r -t "soil/esp32-D80270/cmd" -m "upload"`
+1. The next time the module wakes up, it will perform the update. You can tell taht the upload has happened when the MQTT item has disappeared. I watch it with a tool like [MQTT Explorer](https://mqtt-explorer.com/), or run this shell command 
+   repeatedly <br/> `mosquitto_sub -t "soil/esp32-D80270/cmd"`  
+
+The advantage of this type of OTA update is that you can build firmware for multiple devices, publish the <code>soil/_hostname_/cmd</code> topic for each device, and then go away and forget about it. Each device will update itself the next time it wakes up as scheduled.
+
 
 ## Debugging support
 

@@ -1,11 +1,11 @@
 /**
  * @file        wifi.h
- * Project		: Home automation, MyLaundromatESP
+ * Project		: Home automation, MySoilSensorESP32
  * Author		: Bernd Waldmann
  * Created		: 9-Feb-2020
  * Tabsize		: 4
  * 
- * This Revision: $Id: MyWifi.h 1623 2024-08-09 14:18:24Z  $
+ * This Revision: $Id: MyWifi.h 1826 2025-09-14 15:12:17Z  $
  */
 
 /*

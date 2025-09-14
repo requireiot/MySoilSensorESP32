@@ -1,17 +1,17 @@
 MySoilSensorESP32 - Multi-channel soil moisture sensor
 ====
 
-- [MySoilSensorESP32 - Multi-channel soil moisture sensor](#mysoilsensoresp32---multi-channel-soil-moisture-sensor)
-  - [Objectives](#objectives)
-  - [Use Case](#use-case)
-  - [Requirements](#requirements)
-    - [Connectivity](#connectivity)
-    - [Hardware](#hardware)
-    - [Measurements](#measurements)
-    - [Reports](#reports)
-    - [Configuration](#configuration)
-  - [Architecture](#architecture)
-  - [Mechanical design](#mechanical-design)
+- [Objectives](#objectives)
+- [Use Case](#use-case)
+- [Requirements](#requirements)
+  - [Connectivity](#connectivity)
+  - [Hardware](#hardware)
+  - [Measurements](#measurements)
+  - [Reports](#reports)
+  - [Configuration](#configuration)
+  - [Remote management](#remote-management)
+- [Architecture](#architecture)
+- [Mechanical design](#mechanical-design)
 
 ## Objectives
 * get information about soil moisture, to drive decision when to water a plant
@@ -83,6 +83,7 @@ MySoilSensorESP32 - Multi-channel soil moisture sensor
 - [x] `R039` the device reports the time it took to connect to Wifi, 
   in milliseconds, after each wake period
 
+
 ### Configuration 
 - [x] `R040` the interval between measurement reports is configurable in source 
   code, between 1 min and 1 hour
@@ -90,9 +91,17 @@ MySoilSensorESP32 - Multi-channel soil moisture sensor
   code, between the measurements report interval and 24h
 - [x] `R042` the interval between measurement reports can be changed at runtime
 - [x] `R043` the interval between device status reports can be changed at runtime
-- [ ] `R044` the range for *relative* moisture calculation can be reset at runtime
-  - [ ] `R044.1` the range for *relative* moisture calculation can be reset 
+
+
+### Remote management
+- [x] `R050` the device can update its firmware over-the-air, by downloading new firmware from a HTTP server on the local network
+  - [x] `R050.1` the device downloads a device-specific firmware file
+  - [x] `R050.2` the over-the-air firmware update can be triggered by setting a device-specific MQTT topic
+- [x] `R051` the range for *relative* moisture calculation can be reset at runtime
+  - [x] `R051.1` reset of the range is triggered by setting a device-specific MQTT topic
+  - [ ] `R051.2` the range for *relative* moisture calculation can be reset 
   independently for each channel 
+  
 
 ## Architecture
 - [x] `R101` the device uses cheap Aliexpress sourced capacitive soil moisture 

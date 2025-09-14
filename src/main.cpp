@@ -5,7 +5,7 @@
  * Created		: 14-May-2024
  * Tabsize		: 4
  * 
- * This Revision: $Id: main.cpp 1739 2025-03-21 10:43:43Z  $
+ * This Revision: $Id: main.cpp 1826 2025-09-14 15:12:17Z  $
  */
 
 /*
@@ -22,6 +22,7 @@
  * @brief Multi-channel soil moisture sensor, reporting via MQTT,
  * using an ESP32 module
  */
+
 
 //==============================================================================
 
@@ -46,16 +47,19 @@
 #include <ArduinoOTA.h>         // LGPLv2.1+ license, https://github.com/jandrassy/ArduinoOTA
 #include <ArduinoJSON.h>        // MIT license, https://github.com/bblanchon/ArduinoJson
 #include <PubSubClient.h>       // MIT license, https://github.com/knolleary/pubsubclient
+#include <HTTPUpdate.h>         // LGPLv2.1+ license
 
 //----- my headers
 #include <ansi.h>
 #include "myauth.h"
 #include "MyWifi.h"
-#include "ota.h"
+#include "MyUpdate.h"
+#include "MyOTA.h"
+
 
 /// version string published at startup.
-const char VERSION[] = "$Id: main.cpp 1739 2025-03-21 10:43:43Z  $ built " __DATE__ " " __TIME__;
-/*                      1...5...10....5...20....5...30....5...40...5...50....5...60 */
+const char VERSION[] = "$Id: main.cpp 1826 2025-09-14 15:12:17Z  $ built " __DATE__ " " __TIME__;
+
 //==============================================================================
 #pragma region Preferences
 
@@ -74,10 +78,24 @@ const char VERSION[] = "$Id: main.cpp 1739 2025-03-21 10:43:43Z  $ built " __DAT
 //----- MQTT settings
 
 #define MQTT_BROKER "ha-server"
+// subtopics that we publish under
 #define SUBTOPIC_DATA   "state"   // topic is soil/hostname/state
 #define SUBTOPIC_INFO   "debug"
-#define SUBTOPIC_OTA    "ota"
+// subtopics where we receive commands from outside
 #define SUBTOPIC_CONFIG "config"
+#define SUBTOPIC_OTA    "ota"     // wait for OTA update
+#define SUBTOPIC_CMD    "cmd"
+// payloads for the soil/hostname/cmd topic
+#define MQTT_CMD_RESET   "reset"   // reset min/max sensor range
+#define MQTT_CMD_UPDATE  "update"  // perform HTTP update
+#define MQTT_CMD_OTA     "ota"     // wait for OTA update
+
+//----- HTTP server for JSON updates
+#ifndef FIRMWARE_NAME
+ #define FIRMWARE_NAME "MySoilSensorESP32.bin"
+#endif
+#define UPDATE_SERVER "http://file-server/ota/"
+#define FIRMWARE_PATH UPDATE_SERVER FIRMWARE_NAME
 
 //----- sensor pin connections
 
@@ -103,8 +121,8 @@ const size_t NCHANNELS = sizeof pins_sensor / sizeof pins_sensor[0];    // no of
 const unsigned ADC_RANGE_MV = 3000;
 /// max voltage from an unconnected input with pulldown
 const unsigned ALMOST_ZERO_MV = 400;
-/// must have seen this much swing to consider measurement valid, 5% of range
-const unsigned MIN_SENSOR_DYNAMIC_RANGE = ADC_RANGE_MV / 20;
+/// must have seen this much swing to consider measurement valid, in milllivolts
+const unsigned MIN_SENSOR_DYNAMIC_RANGE = 100;
 
 //------------------------------------------------------------------------------
 #pragma endregion
@@ -192,6 +210,8 @@ void setConfiguration( const char* json )
 #pragma region Global variables
 
 bool request_ota = false;       // flag, enable OTA and don't go to sleep
+bool request_update = false;    // flag, perform HTTP update
+bool request_reset = false;     // flag, reset measurement range
 bool firstRun = false;          // flag, this is not waking up from deep sleep
 
 //----- timing measurements to be reported
@@ -224,7 +244,12 @@ int sensor_abs[NCHANNELS];
 int sensor_rel[NCHANNELS];  
 
 // remember min/max values beyond sleep
-struct SensorRange { int vmin; int vmax; bool valid; };
+struct SensorRange { 
+    int vmin; 
+    int vmax; 
+    bool valid; 
+    void reset() { vmin=ADC_RANGE_MV; vmax=0; valid=false; }
+};
 RTC_DATA_ATTR SensorRange ranges[NCHANNELS];
 
 PubSubClient mqttClient(wifiClient);
@@ -367,8 +392,6 @@ const char* wifi_to_json()
 
 String mqttBaseTopic;
 String mqttClientName;
-String mqttTopic_ota;
-String mqttTopic_config;
 
 
 void active_wait( unsigned ms )
@@ -380,29 +403,7 @@ void active_wait( unsigned ms )
 }
 
 
-/**
- * @brief Callback function called by PubSubClient library when MQTT message received
- * 
- * @param topic  MQTT topic (string)
- * @param payload  MQTT payload (array of bytes)
- * @param length   length of payload
- */
-void subscribeCallback( const char* topic, byte* payload, unsigned length) 
-{
-    String sPayload(payload,length);
-
-    log_i( "MQTT: received '" ANSI_BLUE "%s" ANSI_RESET "' =\n '" ANSI_BOLD "%s" ANSI_RESET "'",
-        topic, sPayload.c_str() );
-
-    if ( mqttTopic_ota==topic ) {
-        if ( (sPayload=="on") || (sPayload=="ON") || (sPayload=="1") ) {
-            request_ota = true;
-        }
-    } else if ( mqttTopic_config==topic ) {
-        setConfiguration( sPayload.c_str() );
-    }
-}
-
+void subscribeCallback( const char* topic, byte* payload, unsigned length);
 
 /**
  * @brief Connect to MQTT broker
@@ -421,8 +422,9 @@ bool mqttConnect()
             t_end = millis();
             dur_mqtt = t_end - t_begin;
     		log_i("connected after %u ms", dur_mqtt );
-            mqttClient.subscribe( mqttTopic_ota.c_str() );
-            mqttClient.subscribe( mqttTopic_config.c_str() );
+            mqttClient.subscribe( (mqttBaseTopic + SUBTOPIC_OTA).c_str() );
+            mqttClient.subscribe( (mqttBaseTopic + SUBTOPIC_CONFIG).c_str() );
+            mqttClient.subscribe( (mqttBaseTopic + SUBTOPIC_CMD).c_str() );
             return true;
     	} else {
             int st = mqttClient.state();
@@ -445,10 +447,12 @@ bool mqttReconnect()
 }
 
 
-/** Publish message to MQTT.
-	@param subtopic  path appended to PUB_TOPIC_BASE to form topic
-	@param message   MQTT payload, 0-terminated
-    @param retain    mark as retained if `true`
+/** 
+ * @brief Publish message to MQTT.
+ *
+ * @param subtopic  path appended to PUB_TOPIC_BASE to form topic
+ * @param message   MQTT payload, 0-terminated
+ * @param retain    mark as retained if `true`
  */
 void mqttPublish( const char* subtopic, const char* message, bool retain=false )
 {
@@ -468,6 +472,49 @@ void mqttPublish( const char* subtopic, const char* message, bool retain=false )
 
 
 /**
+ * @brief Callback function called by PubSubClient library when MQTT message received
+ * 
+ * @param topic  MQTT topic (string)
+ * @param payload  MQTT payload (array of bytes)
+ * @param length   length of payload
+ */
+void subscribeCallback( const char* topic, byte* payload, unsigned length) 
+{
+    String sPayload(payload,length);
+    String sTopic(topic);
+
+    log_i( "MQTT: received '" ANSI_BLUE "%s" ANSI_RESET "' =\n '" ANSI_BOLD "%s" ANSI_RESET "'",
+        topic, sPayload.c_str() );
+
+    // is it a empty payload? ... just deleting a retained topic, ignore
+    if (sPayload.length()==0) return;
+    // is the topic meant for us? if not, ignore
+    if (!sTopic.startsWith(mqttBaseTopic)) return;
+
+    const char* subtopic = topic + mqttBaseTopic.length();
+    String sSubTopic(subtopic);
+    log_i( "MQTT: subtopic '%s'", sSubTopic.c_str() );
+
+    if (sSubTopic==SUBTOPIC_CONFIG) {
+        // received 'soil/esp32-ABCDEF/config' topic, payload is config JSON
+        setConfiguration( sPayload.c_str() );
+    } else if (sSubTopic==SUBTOPIC_CMD) {
+        // received 'soil/esp32-ABCDEF/cmd' topic, payload is command
+        log_i( "MQTT: cmd='%s'", sPayload.c_str() );
+        if (sPayload==MQTT_CMD_OTA) {
+            request_ota = true;
+        } else if (sPayload==MQTT_CMD_UPDATE) {
+            request_update = true;
+        } else if (sPayload==MQTT_CMD_RESET) {
+            request_reset = true;
+        }
+        // acknowledge by deleting retained message
+        mqttPublish( SUBTOPIC_CMD, NULL, true ); 
+    }
+}
+
+
+/**
  * Initialize and connect to MQTT server
  */
 bool mqttSetup()
@@ -481,9 +528,6 @@ bool mqttSetup()
     String hostname = WiFi.getHostname();
     mqttClientName = hostname;
     mqttBaseTopic = "soil/" + hostname + "/";
-    mqttTopic_ota = mqttBaseTopic + SUBTOPIC_OTA;
-    mqttTopic_config = mqttBaseTopic + SUBTOPIC_CONFIG;
-
     return mqttReconnect();
 }
 
@@ -548,9 +592,7 @@ void measureSensor( int ch )
 
     SensorRange& r = ranges[ch];
     if (voltage < ALMOST_ZERO_MV) {
-        r.valid = false;
-        r.vmin = ADC_RANGE_MV;
-        r.vmax = 0;
+        r.reset();
     } else {
         if (voltage > r.vmax)
             r.vmax = voltage;
@@ -595,6 +637,48 @@ void poweroffSensors()
     }
 }
 
+//------------------------------------------------------------------------------
+#pragma endregion
+//==============================================================================
+#pragma region HTTP update
+/*
+#include <HTTPUpdate.h>
+
+#define HTTP_UPDATE ANSI_BRIGHT_MAGENTA "HTTP Update" ANSI_RESET
+
+void do_httpUpdate( const char* firmware_url )
+{
+    WiFiClient client;
+
+    httpUpdate.onStart([]() {
+        Serial.printf(HTTP_UPDATE " started\n");
+    });
+	httpUpdate.onEnd([]() {
+		Serial.println("\n" HTTP_UPDATE " end\n");
+	});
+    httpUpdate.onError([](int err) {
+        Serial.printf(HTTP_UPDATE " fatal error code %d", err);
+    });
+	httpUpdate.onProgress([](unsigned int progress, unsigned int total) {
+		Serial.printf("\r" HTTP_UPDATE " progress: %u%%", (100 * progress / total));
+	});
+
+    log_i("HTTP update from \n  '%s'", firmware_url);
+    HTTPUpdateResult ret = httpUpdate.update(client, firmware_url);    
+    switch (ret) {
+      case HTTP_UPDATE_FAILED: 
+        Serial.printf(ANSI_BRIGHT_RED "HTTP_UPDATE_FAILED Error (%d): %s" ANSI_RESET "\n", 
+            httpUpdate.getLastError(), httpUpdate.getLastErrorString().c_str()); 
+        break;
+      case HTTP_UPDATE_NO_UPDATES: 
+        Serial.println("HTTP_UPDATE_NO_UPDATES"); 
+        break;
+      case HTTP_UPDATE_OK: 
+        Serial.println("HTTP_UPDATE_OK"); 
+        break;
+    }
+}
+*/
 //------------------------------------------------------------------------------
 #pragma endregion
 //==============================================================================
@@ -682,9 +766,10 @@ void setup()
     Serial.printf( "  Battery " ANSI_BOLD "%d" ANSI_RESET " mV",
         battery_mV );
 #endif
-//    Serial.printf( "  Time " ANSI_BRIGHT_BLUE "%ld" ANSI_RESET "s  Uptime %s", 
-//        now_s, Uptime.c_str() );
     Serial.println();
+
+    Serial.print("FIRMWARE_NAME=");
+    Serial.println(FIRMWARE_NAME);
 
 //----- measure sensors
 
@@ -737,10 +822,8 @@ void setup()
             if (config_changed) 
                 mqttPublish( SUBTOPIC_CONFIG, NULL, true );
 
-            if (request_ota) {
-                mqttPublish( SUBTOPIC_OTA, NULL, true );
+            if (request_ota) 
                 setupOTA(); 
-            }
 
             mqttClient.disconnect();
             active_wait(10);
@@ -764,6 +847,15 @@ void setup()
     if (request_ota) {
         Serial.print("OTA enabled. ");
         return;
+    }
+    if (request_reset) {
+        log_i("Resetting sensor ranges");
+        request_reset = false;
+        for (auto r: ranges) r.reset();
+    }
+    if (request_update) {
+        request_update = false;
+        do_httpUpdate(FIRMWARE_PATH);
     }
 
 //----- now enter deep sleep ---------------------------------------------------
