@@ -178,15 +178,13 @@ When the device wakes up, and it finds a retained MQTT message <code>soil/_hostn
 acknowledge that it has received the command. 
 
 To perform this kind of OTA firmware update,
-1. compile your code for the target that has "-ota" in its name (look at 
-   `platformio.ini` and adjust the IP address or device hostname to match your 
-   conguration)
-1. copy the `firmware.bin` file to the HTTP server, and rename it to <code>_hostname_-firmware.bin</code>. For my device `esp32-D80270`, I renamed `firmware.bin` to `esp32-D80270-firmware.bin`. This is done automatically if you have the `extra_scripts = upload_to_http.py` line in your `devices.ini`
-1. publish a retained message for topic <code>soil/_hostname_/cmd</code> with 
-   the payload of `upload` For my device `esp32-D80270`, I run the following shell 
+1. compile your code for the `env:http` target 
+2. when you "upload", the `firmware.bin` file will just be copied to your HTTP server, and renamed to <code>MySoilSensorESP32.bin</code>. 
+3. publish a retained message for topic <code>soil/_hostname_/cmd</code> with 
+   the payload of `update` For my device `esp32-D80270`, I run the following shell 
    comand on the home automation server: <br> 
- `mosquitto_pub -r -t "soil/esp32-D80270/cmd" -m "upload"`
-1. The next time the module wakes up, it will perform the update. You can tell taht the upload has happened when the MQTT item has disappeared. I watch it with a tool like [MQTT Explorer](https://mqtt-explorer.com/), or run this shell command 
+ `mosquitto_pub -r -t "soil/esp32-D80270/cmd" -m "update"`
+1. The next time the module wakes up, it will perform the update. You can tell that the update has happened when the MQTT item disappears. I watch it with a tool like [MQTT Explorer](https://mqtt-explorer.com/), or run this shell command 
    repeatedly <br/> `mosquitto_sub -t "soil/esp32-D80270/cmd"`  
 
 The advantage of this type of OTA update is that you can build firmware for multiple devices, publish the <code>soil/_hostname_/cmd</code> topic for each device, and then go away and forget about it. Each device will update itself the next time it wakes up as scheduled.
