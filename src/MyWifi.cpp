@@ -4,7 +4,7 @@
  * Created		: 9-Feb-2020
  * Tabsize		: 4
  * 
- * This Revision: $Id: MyWifi.cpp 1827 2025-09-14 20:54:44Z  $
+ * This Revision: $Id: MyWifi.cpp 1828 2025-09-15 21:57:40Z  $
  */
 
 /*
@@ -164,7 +164,7 @@ static bool _reconnectWifi()
     int wfs;
 
     log_i("try to re-connect ch=%d, ", wifiState.channel);
-    uint32_t t_start = millis();
+    t_start = millis();
 
     WiFi.config( wifiState.ip, wifiState.gateway, wifiState.subnet, wifiState.dns, wifiState.dns );
     WiFi.begin( WIFI_SSID, WIFI_PASSWORD, wifiState.channel, wifiState.bssid, true );

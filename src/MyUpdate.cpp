@@ -25,7 +25,7 @@
 #include "ansi.h"
 #include "MyUpdate.h"
 
-extern HardwareSerial DebugSerial;
+extern HardwareSerial& DebugSerial;
 
 
 #define HTTP_UPDATE ANSI_BRIGHT_MAGENTA "HTTP Update" ANSI_RESET
@@ -37,7 +37,11 @@ extern HardwareSerial DebugSerial;
  */
 void do_httpUpdate( const char* firmware_url )
 {
+#if (ESP_ARDUINO_VERSION_MAJOR < 3)
     WiFiClient client;
+#else
+    NetworkClient client;
+#endif
 
     httpUpdate.onStart([]() {
         DebugSerial.printf(HTTP_UPDATE " started\n");
@@ -53,6 +57,7 @@ void do_httpUpdate( const char* firmware_url )
 	});
 
     log_i("HTTP update from \n  '" ANSI_BLUE "%s" ANSI_RESET "'", firmware_url);
+    httpUpdate.rebootOnUpdate(true);
     HTTPUpdateResult ret = httpUpdate.update(client, firmware_url);    
     switch (ret) {
       case HTTP_UPDATE_FAILED: 

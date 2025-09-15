@@ -5,7 +5,7 @@
  * Created		: 14-May-2024
  * Tabsize		: 4
  * 
- * This Revision: $Id: main.cpp 1827 2025-09-14 20:54:44Z  $
+ * This Revision: $Id: main.cpp 1828 2025-09-15 21:57:40Z  $
  */
 
 /*
@@ -22,7 +22,6 @@
  * @brief Multi-channel soil moisture sensor, reporting via MQTT,
  * using an ESP32 module
  */
-
 
 //==============================================================================
 
@@ -58,7 +57,7 @@
 
 
 /// version string published at startup.
-const char VERSION[] = "$Id: main.cpp 1827 2025-09-14 20:54:44Z  $ built " __DATE__ " " __TIME__;
+const char VERSION[] = "$Id: main.cpp 1828 2025-09-15 21:57:40Z  $ built " __DATE__ " " __TIME__;
 
 //==============================================================================
 #pragma region Preferences
@@ -73,7 +72,7 @@ const char VERSION[] = "$Id: main.cpp 1827 2025-09-14 20:54:44Z  $ built " __DAT
 
 //----- serial output
 
-#define MY_BAUD_RATE 230400uL // was 115200uL
+#define MY_BAUD_RATE 115200uL
 
 //----- MQTT settings
 
@@ -81,9 +80,9 @@ const char VERSION[] = "$Id: main.cpp 1827 2025-09-14 20:54:44Z  $ built " __DAT
 // subtopics that we publish under
 #define SUBTOPIC_DATA   "state"   // topic is soil/hostname/state
 #define SUBTOPIC_INFO   "debug"
+#define SUBTOPIC_DEVICE "device"
 // subtopics where we receive commands from outside
 #define SUBTOPIC_CONFIG "config"
-#define SUBTOPIC_OTA    "ota"     // wait for OTA update
 #define SUBTOPIC_CMD    "cmd"
 // payloads for the soil/hostname/cmd topic
 #define MQTT_CMD_RESET   "reset"   // reset min/max sensor range
@@ -107,7 +106,7 @@ const int pins_sensor[] = {
     32      // GPIO 32 = ADC1_4 = Arduino A4
     };   
 
- /// connect these GPIO to sensor VCC
+/// connect these GPIO to sensor VCC
 const int pins_power[]  = { 
     25,     // GPIO 25 = ADC2_8
     26,     // GPIO 26 = ADC2_9
@@ -115,7 +114,8 @@ const int pins_power[]  = {
     4       // GPIO 4  = ADC2_0
     };    
 
-const size_t NCHANNELS = sizeof pins_sensor / sizeof pins_sensor[0];    // no of sensor channels
+/// no of sensor channels
+const size_t NCHANNELS = sizeof pins_sensor / sizeof pins_sensor[0];
 
 /// max expected ADC value in millivolts
 const unsigned ADC_RANGE_MV = 3000;
@@ -254,7 +254,7 @@ RTC_DATA_ATTR SensorRange ranges[NCHANNELS];
 
 PubSubClient mqttClient(wifiClient);
 
-HardwareSerial DebugSerial(2);     // on ESP32, we use UART#2 (gpio 16,17) for debug outputs
+HardwareSerial& DebugSerial = Serial1;
 
 //------------------------------------------------------------------------------
 #pragma endregion
@@ -382,6 +382,27 @@ const char* wifi_to_json()
 }
 
 
+/**
+ * @brief Create debug record for publishing via MQTT,
+ * with static information about device
+ * 
+ * @return const char*  Pointer to static buffer with JSON string
+ */
+const char* device_to_json()
+{
+    JsonDocument doc;
+    unsigned stackHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
+
+    doc["SDK"] = ESP.getSdkVersion();
+    //doc["Core"] = ESP.getCoreVersion();
+    doc["Heap"] = ESP.getFreeHeap();   
+    doc["Stack"] = stackHighWaterMark;
+
+    serializeJson(doc,msgbuf);
+    return msgbuf;
+}
+
+
 //------------------------------------------------------------------------------
 #pragma endregion
 //==============================================================================
@@ -389,7 +410,6 @@ const char* wifi_to_json()
 
 
 String mqttBaseTopic;
-String mqttClientName;
 
 
 void active_wait( unsigned ms )
@@ -411,16 +431,16 @@ void subscribeCallback( const char* topic, byte* payload, unsigned length);
 bool mqttConnect() 
 {
     uint32_t t_begin, t_end;
-    log_i("connecting as '%s' to broker '%s'", mqttClientName.c_str(), MQTT_BROKER );
+    const char* clientName = WiFi.getHostname();
 
+    log_i("connecting as '%s' to broker '%s'", clientName, MQTT_BROKER );
     t_begin = millis();
     for (int i=0; i<MQTT_RETRY; i++) {
-        mqttClient.loop(); yield();
-    	if (mqttClient.connect(mqttClientName.c_str())) {
+        mqttClient.loop();
+    	if (mqttClient.connect(clientName)) {
             t_end = millis();
             dur_mqtt = t_end - t_begin;
     		log_i("connected after %u ms", dur_mqtt );
-            mqttClient.subscribe( (mqttBaseTopic + SUBTOPIC_OTA).c_str() );
             mqttClient.subscribe( (mqttBaseTopic + SUBTOPIC_CONFIG).c_str() );
             mqttClient.subscribe( (mqttBaseTopic + SUBTOPIC_CMD).c_str() );
             return true;
@@ -524,7 +544,6 @@ bool mqttSetup()
     mqttClient.setCallback(subscribeCallback);
 
     String hostname = WiFi.getHostname();
-    mqttClientName = hostname;
     mqttBaseTopic = "soil/" + hostname + "/";
     return mqttReconnect();
 }
@@ -655,6 +674,9 @@ void setup()
     digitalWrite( PIN_AWAKE, HIGH );
 #endif
 
+    Serial1.begin(MY_BAUD_RATE,SERIAL_8N1,16,17);
+    Serial1.setDebugOutput(true);  
+
   	int rtc_reset_reason = rtc_get_reset_reason(0); 
 
     if ((config.signature != SIGNATURE) || (rtc_reset_reason != DEEPSLEEP_RESET))
@@ -681,11 +703,6 @@ void setup()
     bool ignoreSensors = (now_s < (IGNORE_FIRST / 1000uL) );
 
     WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG,0); // disable brownout detection
-
-    DebugSerial.setPins(16,17);
-    DebugSerial.begin(MY_BAUD_RATE);
-    DebugSerial.setDebugOutput(true);  
-    DebugSerial.setDebugOutput(true);
 
     DebugSerial.println("====================================================");
 
@@ -781,6 +798,10 @@ void setup()
             if (config_changed) 
                 mqttPublish( SUBTOPIC_CONFIG, NULL, true );
 
+            if (bootCount==2) {
+                mqttPublish(SUBTOPIC_DEVICE,device_to_json(),true);
+            }
+
             if (request_ota) 
                 setupOTA(); 
 
@@ -836,7 +857,7 @@ void setup()
     DebugSerial.flush();
 
     unsigned sleeptime_s = lastCycleFailed ? 300 : SOIL_REPORT_INTERVAL_S;
-    esp_sleep_enable_timer_wakeup( sleeptime_s * 1000000ull );
+    esp_sleep_enable_timer_wakeup( sleeptime_s * 1'000'000uLL );
 
     // signal end of wake phase (oscilloscope trigger)
 #ifdef PIN_AWAKE

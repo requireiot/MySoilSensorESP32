@@ -5,7 +5,7 @@
  * Created		: 9-Feb-2020
  * Tabsize		: 4
  * 
- * This Revision: $Id: MyOTA.cpp 1827 2025-09-14 20:54:44Z  $
+ * This Revision: $Id: MyOTA.cpp 1828 2025-09-15 21:57:40Z  $
  */
 
 /*
@@ -28,7 +28,7 @@
 const char* OTA_PASSWORD  = "123";  //the WIFI_PASSWORD you will need to enter to upload remotely via the ArduinoIDE
 const int   OTA_PORT      = 3232;
 
-extern HardwareSerial DebugSerial;
+extern HardwareSerial& DebugSerial;
 
 
 void setupOTA()
