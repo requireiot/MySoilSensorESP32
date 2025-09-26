@@ -5,7 +5,7 @@
  * Created		: 9-Feb-2020
  * Tabsize		: 4
  * 
- * This Revision: $Id: MyWifi.h 1826 2025-09-14 15:12:17Z  $
+ * This Revision: $Id: MyWifi.h 1846 2025-09-26 10:12:45Z  $
  */
 
 /*
@@ -20,42 +20,7 @@
 #ifndef _WIFI_H
 #define _WIFI_H
 
-
 extern WiFiClient wifiClient;
-
-/**
- * @brief Wifi connection information that can be stored in RTC RAM or FFS
- * 
- */
-struct WifiState {
-   uint32_t crc32;
-   uint32_t ip;
-   uint32_t gateway;
-   uint32_t subnet;
-   uint32_t dns;
-   uint32_t channel;
-   uint8_t bssid[6];
-
-   bool operator == (const WifiState& other) {
-      return (ip == other.ip)
-         &&  (gateway == other.gateway)
-         &&  (subnet == other.subnet)
-         &&  (dns == other.dns)
-         &&  (channel == other.channel)
-         ;
-   }
-
-   static uint32_t calculateCRC32( const uint8_t *data, size_t length );
-
-   bool is_valid() {
-       return crc32 == calculateCRC32( ((uint8_t *)&(this->ip)), sizeof(*this)-sizeof(crc32)) ;
-   }
-
-   void make_valid() {
-       crc32 = calculateCRC32( ((uint8_t *)&(this->ip)), sizeof(*this)-sizeof(crc32)) ;
-   }
-};
-
 
 int setupWifi( bool allow_reconnect=true );
 bool loopWifi();

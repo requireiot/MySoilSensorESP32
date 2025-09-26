@@ -1,11 +1,11 @@
 /**
- * @file        ota.h
- * Project		: Home automation, MyLaundromatESP
+ * @file        MyOTA.h
+ * Project		: Home automation
  * Author		: Bernd Waldmann
  * Created		: 9-Feb-2020
  * Tabsize		: 4
  * 
- * This Revision: $Id: MyOTA.h 1826 2025-09-14 15:12:17Z  $
+ * This Revision: $Id: SimpleOTA.h 1840 2025-09-24 14:33:02Z  $
  */
 
 /*
@@ -20,6 +20,6 @@
 #ifndef _OTA_H
 #define _OTA_H
 
-void setupOTA();
+void setupOTA(Print& serialdevice);
 
 #endif // _OTA_H

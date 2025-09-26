@@ -5,7 +5,7 @@
  * Created		: 14-May-2024
  * Tabsize		: 4
  * 
- * This Revision: $Id: main.cpp 1828 2025-09-15 21:57:40Z  $
+ * This Revision: $Id: main.cpp 1846 2025-09-26 10:12:45Z  $
  */
 
 /*
@@ -49,15 +49,19 @@
 #include <HTTPUpdate.h>         // LGPLv2.1+ license
 
 //----- my headers
-#include <ansi.h>
+#include "ansi.h"
 #include "myauth.h"
 #include "MyWifi.h"
-#include "MyUpdate.h"
-#include "MyOTA.h"
+#include "SimpleHttpUpdate.h"
+#include "SimpleOTA.h"
+#include "SimpleReports.h"
+#include "SimpleMqttClient.h"
 
 
 /// version string published at startup.
-const char VERSION[] = "$Id: main.cpp 1828 2025-09-15 21:57:40Z  $ built " __DATE__ " " __TIME__;
+const char VERSION[] = "$Id: main.cpp 1846 2025-09-26 10:12:45Z  $ built " __DATE__ " " __TIME__;
+
+#define DebugSerial Serial1
 
 //==============================================================================
 #pragma region Preferences
@@ -77,6 +81,9 @@ const char VERSION[] = "$Id: main.cpp 1828 2025-09-15 21:57:40Z  $ built " __DAT
 //----- MQTT settings
 
 #define MQTT_BROKER "ha-server"
+#define MQTT_TOPIC_BASE "soil/${HOSTNAME}/"
+#define MQTT_PREFIX_CMND "cmd"
+#define MQTT_TOPIC_SUBSCRIBE MQTT_TOPIC_BASE MQTT_PREFIX_CMND
 // subtopics that we publish under
 #define SUBTOPIC_DATA   "state"   // topic is soil/hostname/state
 #define SUBTOPIC_INFO   "debug"
@@ -253,8 +260,7 @@ struct SensorRange {
 RTC_DATA_ATTR SensorRange ranges[NCHANNELS];
 
 PubSubClient mqttClient(wifiClient);
-
-HardwareSerial& DebugSerial = Serial1;
+SimpleMqttClient simpleMqttClient(mqttClient,MQTT_BROKER);
 
 //------------------------------------------------------------------------------
 #pragma endregion
@@ -372,9 +378,7 @@ const char* wifi_to_json()
     JsonDocument doc;
    
     reportWifi( doc );
-
-    doc["mqtt"] = dur_mqtt;
-    doc["dns"] = dur_dns;
+    simpleMqttClient.report(doc);
     doc["fail"] = lastCycleFailed;
 
     serializeJson(doc,msgbuf);
@@ -408,9 +412,23 @@ const char* device_to_json()
 //==============================================================================
 #pragma region MQTT stuff
 
+/*
+    publish to haus/HOSTNAME/ 
+    path                  | content                         |  publish interval
+    ----------------------+---------------------------------+------------------
+    haus/HOSTNAME/version | version string from SVN         |  once
+    haus/HOSTNAME/device  | static info about CPU, Code etc |  once
+    haus/HOSTNAME/wifi    | performance parameters          |  every cycle
+    haus/HOSTNAME/debug   | device status                   |  every 6h
 
-String mqttBaseTopic;
-
+    subscribe to haus/HOSTNAME/cmd
+    payload                 effect
+    ---------------------------------------------------------------------------
+    reset                   reset ADC ranges
+    ota                     do not go to sleep, wait for OTA update
+    update                  perform firmware update from HTTP server
+    {"key":"val"}           change configuration option `key` to `val`
+*/
 
 void active_wait( unsigned ms )
 {
@@ -421,131 +439,43 @@ void active_wait( unsigned ms )
 }
 
 
-void subscribeCallback( const char* topic, byte* payload, unsigned length);
-
-/**
- * @brief Connect to MQTT broker
- * 
- * @returns true    if connected
- */
-bool mqttConnect() 
-{
-    uint32_t t_begin, t_end;
-    const char* clientName = WiFi.getHostname();
-
-    log_i("connecting as '%s' to broker '%s'", clientName, MQTT_BROKER );
-    t_begin = millis();
-    for (int i=0; i<MQTT_RETRY; i++) {
-        mqttClient.loop();
-    	if (mqttClient.connect(clientName)) {
-            t_end = millis();
-            dur_mqtt = t_end - t_begin;
-    		log_i("connected after %u ms", dur_mqtt );
-            mqttClient.subscribe( (mqttBaseTopic + SUBTOPIC_CONFIG).c_str() );
-            mqttClient.subscribe( (mqttBaseTopic + SUBTOPIC_CMD).c_str() );
-            return true;
-    	} else {
-            int st = mqttClient.state();
-    		log_e("failed %d, rc=%d", i, st);
-            delay(MQTT_WAIT_MS);
-    	}
-    }
-    log_e( ANSI_RED "Could not connect to MQTT" ANSI_RESET );
-	return false;
-}
-
-
-/** Try to connect or re-connect to MQTT broker, non-blocking.
-	@returns true if connected
- */
-bool mqttReconnect()
-{
-	if (mqttClient.connected()) return true;
-    return mqttConnect();
-}
-
-
-/** 
- * @brief Publish message to MQTT.
- *
- * @param subtopic  path appended to PUB_TOPIC_BASE to form topic
- * @param message   MQTT payload, 0-terminated
- * @param retain    mark as retained if `true`
- */
 void mqttPublish( const char* subtopic, const char* message, bool retain=false )
 {
-	if (!mqttClient.connected()) return;
-    yield(); mqttClient.loop(); yield();
-
-    String topic = mqttBaseTopic + subtopic;
-    if (!mqttReconnect()) return;
-	if (mqttClient.publish(topic.c_str(), message, (boolean)retain)) {
-        log_i("publish '" ANSI_WHITE "%s" ANSI_RESET "' =\n '" ANSI_WHITE "%s" ANSI_RESET "'", 
-            topic.c_str(), message ? message : "NULL" );
-	} else {
-		log_e("publish " ANSI_BRIGHT_RED "fail" ANSI_RESET);
-	}
-    active_wait(100);
+    simpleMqttClient.publish(subtopic, message, retain);
 }
 
 
-/**
- * @brief Callback function called by PubSubClient library when MQTT message received
- * 
- * @param topic  MQTT topic (string)
- * @param payload  MQTT payload (array of bytes)
- * @param length   length of payload
- */
-void subscribeCallback( const char* topic, byte* payload, unsigned length) 
+void onReceive( const char* subtopic, const char* message )
 {
-    String sPayload(payload,length);
-    String sTopic(topic);
-
-    log_i( "MQTT: received '" ANSI_BLUE "%s" ANSI_RESET "' =\n '" ANSI_BOLD "%s" ANSI_RESET "'",
-        topic, sPayload.c_str() );
+    log_i( "MQTT: received '" ANSI_BLUE "%s" ANSI_RESET "' = '" ANSI_BOLD "%s" ANSI_RESET "'",
+        subtopic ? subtopic : "(blank)", 
+        message ? message : "(blank)" );
 
     // is it a empty payload? ... just deleting a retained topic, ignore
-    if (sPayload.length()==0) return;
-    // is the topic meant for us? if not, ignore
-    if (!sTopic.startsWith(mqttBaseTopic)) return;
+    if (message==NULL || *message==0) return;
 
-    const char* subtopic = topic + mqttBaseTopic.length();
-    String sSubTopic(subtopic);
-    log_i( "MQTT: subtopic '%s'", sSubTopic.c_str() );
-
-    if (sSubTopic==SUBTOPIC_CONFIG) {
-        // received 'soil/esp32-ABCDEF/config' topic, payload is config JSON
-        setConfiguration( sPayload.c_str() );
-    } else if (sSubTopic==SUBTOPIC_CMD) {
-        // received 'soil/esp32-ABCDEF/cmd' topic, payload is command
-        log_i( "MQTT: cmd='%s'", sPayload.c_str() );
-        if (sPayload==MQTT_CMD_OTA) {
-            request_ota = true;
-        } else if (sPayload==MQTT_CMD_UPDATE) {
-            request_update = true;
-        } else if (sPayload==MQTT_CMD_RESET) {
-            request_reset = true;
-        }
-        // acknowledge by deleting retained message
-        mqttPublish( SUBTOPIC_CMD, NULL, true ); 
+    if (message[0]=='{') {  // looks like a JSON string, must be a config message
+        setConfiguration( message );
+    } else if (!strcmp(message,MQTT_CMD_OTA)) {
+        request_ota = true;
+    } else if (!strcmp(message,MQTT_CMD_UPDATE)) {
+        request_update = true;
+    } else if (!strcmp(message,MQTT_CMD_RESET)) {
+        request_reset = true;
     }
+    // acknowledge by deleting retained message
+    mqttPublish( MQTT_PREFIX_CMND, NULL, true ); 
 }
 
 
-/**
- * Initialize and connect to MQTT server
- */
 bool mqttSetup()
 {
-    // had some issues with slow DNS response. now doing DNS lookup as a separate step
-    IPAddress ip;
-    if (!dns_lookup(MQTT_BROKER,ip)) return false;
-    mqttClient.setServer(ip, 1883);
-    mqttClient.setCallback(subscribeCallback);
-
-    String hostname = WiFi.getHostname();
-    mqttBaseTopic = "soil/" + hostname + "/";
-    return mqttReconnect();
+    bool ok = simpleMqttClient.begin( MQTT_TOPIC_SUBSCRIBE, MQTT_TOPIC_BASE );
+    if (ok) {
+        simpleMqttClient.setCallback(onReceive);
+        active_wait(10);
+    }
+    return ok;
 }
 
 //------------------------------------------------------------------------------
@@ -795,15 +725,12 @@ void setup()
                 mqttPublish( SUBTOPIC_DATA, state_to_json() );
             }
 
-            if (config_changed) 
-                mqttPublish( SUBTOPIC_CONFIG, NULL, true );
-
             if (bootCount==2) {
                 mqttPublish(SUBTOPIC_DEVICE,device_to_json(),true);
             }
 
             if (request_ota) 
-                setupOTA(); 
+                setupOTA(DebugSerial); 
 
             mqttClient.disconnect();
             active_wait(10);
@@ -835,7 +762,7 @@ void setup()
     }
     if (request_update) {
         request_update = false;
-        do_httpUpdate(FIRMWARE_PATH);
+        do_httpUpdate(wifiClient, FIRMWARE_PATH, DebugSerial);
     }
 
 //----- now enter deep sleep ---------------------------------------------------

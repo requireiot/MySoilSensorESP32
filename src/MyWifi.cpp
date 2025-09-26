@@ -4,7 +4,7 @@
  * Created		: 9-Feb-2020
  * Tabsize		: 4
  * 
- * This Revision: $Id: MyWifi.cpp 1828 2025-09-15 21:57:40Z  $
+ * This Revision: $Id: MyWifi.cpp 1846 2025-09-26 10:12:45Z  $
  */
 
 /*
@@ -39,7 +39,41 @@
 #include "myauth.h" // defines WIFI_SSID, WIFI_PASSWORD
 #include "ansi.h"
 
-//----- constants and preferences
+//----- types ------------------------------------------------------------------
+
+/// @brief Wifi connection information that can be stored in RTC RAM or FFS
+struct WifiState {
+   uint32_t crc32;
+   uint32_t ip;
+   uint32_t gateway;
+   uint32_t subnet;
+   uint32_t dns;
+   uint32_t channel;
+   uint8_t bssid[6];
+
+   bool operator == (const WifiState& other) {
+      return (ip == other.ip)
+         &&  (gateway == other.gateway)
+         &&  (subnet == other.subnet)
+         &&  (dns == other.dns)
+         &&  (channel == other.channel)
+         ;
+   }
+
+   static uint32_t calculateCRC32( const uint8_t *data, size_t length );
+
+   bool is_valid() {
+       return crc32 == calculateCRC32( 
+            ((uint8_t *)&(this->ip)), sizeof(*this)-sizeof(crc32)
+        );
+   }
+
+   void make_valid() {
+       crc32 = calculateCRC32( ((uint8_t *)&(this->ip)), sizeof(*this)-sizeof(crc32)) ;
+   }
+};
+
+//----- constants and preferences ----------------------------------------------
 
 /// allow automatic connection to Wifi AP on power up ?
 const bool ALLOW_AUTO_CONNECT_ON_START = false;
@@ -48,7 +82,9 @@ const bool ALLOW_AUTO_RECONNECT = true;
 
 #define WIFI_TIMEOUT_MS 5000uL
 
-//----- local variables
+#define IF_NAME ANSI_MAGENTA "WiFi" ANSI_RESET
+
+//----- local variables --------------------------------------------------------
 
 WiFiClient wifiClient;
 RTC_DATA_ATTR WifiState wifiState;
@@ -57,15 +93,6 @@ static uint32_t t_start, t_connected, t_gotIP;
 
 enum connect_t { error=0, autoconnect, reconnect, freshconnect };
 static connect_t connectMode = connect_t::error;       // filled by setupWifi()
-
-//----------------------------------------------------------------------------
-
-const char* iptoa( const IPAddress& ip )
-{
-    static char s[16];
-    snprintf( s, sizeof(s), "%hd.%hd.%hd.%hd", ip[0], ip[1], ip[2], ip[3] );
-    return s;
-}
 
 //----------------------------------------------------------------------------
 
@@ -86,7 +113,7 @@ static void _fillConfig()
 //----------------------------------------------------------------------------
 
 /**
- * @brief Create JSON report with Wifi performance parameters
+ * @brief Add Wifi performance parameters to JSON report
  * 
  * @param doc  reference to JSON object to add to
  */
@@ -103,50 +130,50 @@ void reportWifi( JsonDocument& doc )
     }
 
     doc["ch"] = wifiState.channel;   
-    doc["dhcp"] = t_gotIP - t_connected;    // time to get IP address [ms]
+    doc["dhcp"] = t_gotIP - t_connected;  // time to get IP address [ms]
     doc["mode"] = (int)connectMode;
     doc["RSSI"] = quality;
-    doc["ttc"] = t_wifi_setup;              // time to connect to AP [ms]
+    doc["ttc"] = t_wifi_setup;            // time to connect to AP [ms]
 }
 
 //----------------------------------------------------------------------------
 
-void onWiFiEvent(WiFiEvent_t event) 
+static void onWiFiEvent(WiFiEvent_t event) 
 {
     switch(event) {
-    	
+
         case ARDUINO_EVENT_WIFI_READY:
-            log_i("WiFi ready");
+            log_i(IF_NAME " ready");
             break;
 
         case ARDUINO_EVENT_WIFI_STA_START:
-            log_i("STA start");
+            log_i(IF_NAME ": STA start");
+            break;
+
+        case ARDUINO_EVENT_WIFI_STA_CONNECTED:
+            t_connected = millis();
+            log_i(IF_NAME " connected after %u ms", t_connected-t_start);
             break;
 
         case ARDUINO_EVENT_WIFI_STA_GOT_IP:
             t_gotIP = millis();
-            log_i("got IP after %u ms", t_gotIP-t_start);
-            break;
-            
-        case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
-            log_i("lost connection ");
-            break;
-            
-        case ARDUINO_EVENT_WIFI_STA_AUTHMODE_CHANGE:
-            log_i("authmode change ");
-            break;
-            
-        case ARDUINO_EVENT_WIFI_STA_CONNECTED:
-            t_connected = millis();
-            log_i("connected after %u ms", t_connected-t_start);
-            break;
-            
-        case ARDUINO_EVENT_WIFI_STA_STOP:
-            log_i("STA stop ");
+            log_i(IF_NAME ": got IP after %u ms", t_gotIP-t_start);
             break;
 
+        case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+			log_e( IF_NAME " " ANSI_BRIGHT_RED "Disconnected" ANSI_RESET);
+            break;
+
+        case ARDUINO_EVENT_WIFI_STA_STOP:
+            log_i(IF_NAME ": STA stop");
+            break;
+
+        case ARDUINO_EVENT_WIFI_STA_AUTHMODE_CHANGE:
+            log_i(IF_NAME " authmode change ");
+            break;
+            
         default:
-            log_i("WiFi event %d",(int)event);
+            log_i(IF_NAME " event %d",(int)event);
             break;
     }    
 }
@@ -163,9 +190,8 @@ static bool _reconnectWifi()
     uint32_t t1, t2;
     int wfs;
 
-    log_i("try to re-connect ch=%d, ", wifiState.channel);
+    log_i(IF_NAME " try to re-connect ch=%d, ", wifiState.channel);
     t_start = millis();
-
     WiFi.config( wifiState.ip, wifiState.gateway, wifiState.subnet, wifiState.dns, wifiState.dns );
     WiFi.begin( WIFI_SSID, WIFI_PASSWORD, wifiState.channel, wifiState.bssid, true );
 
@@ -197,22 +223,22 @@ static bool _reconnectWifi()
 //----------------------------------------------------------------------------
 
 /**
- * @brief  Try to connect to WiFi AP
+ * @brief  Try to connect to WiFi AP using SSID and PASSWORD
  * 
  * @return true  if connection was successful
  * @return false  if not
  */
 static bool _freshConnectWifi()
 {
-    //WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+    log_i(IF_NAME " fresh connect to '" ANSI_BOLD "%s" ANSI_RESET "'",WIFI_SSID);
     t_start = millis();
     WiFi.begin( WIFI_SSID, WIFI_PASSWORD );
-    uint8_t wf = WiFi.waitForConnectResult(WIFI_TIMEOUT_MS); // 5 sec timeout
+    uint8_t wf = WiFi.waitForConnectResult(WIFI_TIMEOUT_MS);
     if (wf==WL_CONNECTED) {
-        log_i(ANSI_GREEN "WiFi connected" ANSI_RESET);
+        log_i(IF_NAME " " ANSI_GREEN "connected" ANSI_RESET);
         return true;
     } else {
-        log_e( ANSI_RED "WiFi connect failed, status=%d" ANSI_RESET, (int)wf);
+        log_e( IF_NAME " " ANSI_RED "connect failed, status=%d" ANSI_RESET, (int)wf);
         return false;
     }
 }
@@ -228,7 +254,7 @@ static bool _freshConnectWifi()
  * @return 1  if automatic reconnection was successful
  * @return 2  if reconnection was successful
  * @return 3  if fresh connection was successful
-  * @return 0  if reconnect and fresh connect failed
+ * @return 0  if reconnect and fresh connect failed
  */
 int setupWifi( bool allow_reconnect )
 {
@@ -236,7 +262,7 @@ int setupWifi( bool allow_reconnect )
     bool isValid = wifiState.is_valid();
     allow_reconnect = isValid && allow_reconnect && ALLOW_AUTO_RECONNECT;
 
-    log_i("Wifi: config is%svalid, try to connect", 
+    log_i(IF_NAME ": config is%svalid, try to connect", 
         isValid ? " " : ANSI_RED " not " ANSI_RESET );
 
     uint32_t t_start = millis();
@@ -265,10 +291,10 @@ int setupWifi( bool allow_reconnect )
     t_wifi_setup = t_stop - t_start;
 
     if (connectMode != connect_t::error) {
-        log_i("mode %d, took " ANSI_BRIGHT_MAGENTA "%u" ANSI_RESET " ms", 
+        log_i(IF_NAME ": mode %d, took " ANSI_BRIGHT_MAGENTA "%u" ANSI_RESET " ms", 
             (int)connectMode, t_wifi_setup );
     } else {
-        log_e( ANSI_BRIGHT_RED "Wifi is NOT connected." ANSI_RESET );
+        log_e(IF_NAME " " ANSI_BRIGHT_RED "is NOT connected." ANSI_RESET );
         return connect_t::error;
     }
 

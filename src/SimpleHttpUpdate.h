@@ -4,7 +4,7 @@
  * Created		: 14-Sep-2025
  * Tabsize		: 4
  * 
- * This Revision: $Id: $
+ * This Revision: $Id: SimpleHttpUpdate.h 1846 2025-09-26 10:12:45Z  $
  */
 
 /*
@@ -20,6 +20,6 @@
 #ifndef __MYUPDATE_H
 #define __MYUPDATE_H
 
-void do_httpUpdate( const char* firmware_url );
+void do_httpUpdate( WiFiClient& client, const char* firmware_url, Print& serial );
 
 #endif

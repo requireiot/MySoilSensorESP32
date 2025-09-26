@@ -4,7 +4,7 @@
  * Created		: 14-Sep-2025
  * Tabsize		: 4
  * 
- * This Revision: $Id: $
+ * This Revision: $Id: SimpleHttpUpdate.cpp 1846 2025-09-26 10:12:45Z  $
  */
 
 /*
@@ -21,39 +21,34 @@
  * @brief Convenience function to execute update-over-HTTP
  */
 
+#include <WiFi.h>
 #include <HTTPUpdate.h>
 #include "ansi.h"
-#include "MyUpdate.h"
-
-extern HardwareSerial& DebugSerial;
+#include "SimpleHttpUpdate.h"
 
 
-#define HTTP_UPDATE ANSI_BRIGHT_MAGENTA "HTTP Update" ANSI_RESET
+#define TAG ANSI_BRIGHT_MAGENTA "HTTP Update" ANSI_RESET
 
 /**
  * @brief Download new firmware from HTTP server at `firmware_url` and install
  * 
  * @param firmware_url 
  */
-void do_httpUpdate( const char* firmware_url )
+void do_httpUpdate( WiFiClient& client, const char* firmware_url, Print& aSerial )
 {
-#if (ESP_ARDUINO_VERSION_MAJOR < 3)
-    WiFiClient client;
-#else
-    NetworkClient client;
-#endif
+    static Print& serial = aSerial;
 
     httpUpdate.onStart([]() {
-        DebugSerial.printf(HTTP_UPDATE " started\n");
+        serial.printf(TAG " started\n");
     });
 	httpUpdate.onEnd([]() {
-		DebugSerial.println("\n" HTTP_UPDATE " end\n");
+		serial.println("\n" TAG " end\n");
 	});
     httpUpdate.onError([](int err) {
-        DebugSerial.printf(HTTP_UPDATE " fatal error code %d", err);
+        serial.printf(TAG " fatal error code %d", err);
     });
 	httpUpdate.onProgress([](unsigned int progress, unsigned int total) {
-		DebugSerial.printf("\r" HTTP_UPDATE " progress: %u%%", (100 * progress / total));
+		serial.printf("\r" TAG " progress: %u%%", (100 * progress / total));
 	});
 
     log_i("HTTP update from \n  '" ANSI_BLUE "%s" ANSI_RESET "'", firmware_url);
@@ -61,14 +56,14 @@ void do_httpUpdate( const char* firmware_url )
     HTTPUpdateResult ret = httpUpdate.update(client, firmware_url);    
     switch (ret) {
       case HTTP_UPDATE_FAILED: 
-        DebugSerial.printf(ANSI_BRIGHT_RED "HTTP_UPDATE_FAILED Error (%d): %s" ANSI_RESET "\n", 
+        serial.printf(ANSI_BRIGHT_RED "HTTP_UPDATE_FAILED Error (%d): %s" ANSI_RESET "\n", 
             httpUpdate.getLastError(), httpUpdate.getLastErrorString().c_str()); 
         break;
       case HTTP_UPDATE_NO_UPDATES: 
-        DebugSerial.println("HTTP_UPDATE_NO_UPDATES"); 
+        serial.println( TAG " no updates"); 
         break;
       case HTTP_UPDATE_OK: 
-        DebugSerial.println("HTTP_UPDATE_OK"); 
+        serial.println( TAG " update ok"); 
         break;
     }
 }
