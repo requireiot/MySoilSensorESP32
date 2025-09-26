@@ -1,7 +1,7 @@
 #ifndef __SimpleReports_h
 #define __SimpleReports_h
 
-void printEnvironment( Print& Serial );
+void printEnvironment( Print& serial );
 void printMemoryInfo( Print& serial );
 void reportEnvironmentJSON( JsonDocument& doc );
 const char* reportEnvironmentString();

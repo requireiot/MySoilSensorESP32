@@ -1,11 +1,11 @@
 /**
- * @file        wifi.h
- * Project		: Home automation, MySoilSensorESP32
+ * @file        MyOTA.h
+ * Project		: Home automation
  * Author		: Bernd Waldmann
  * Created		: 9-Feb-2020
  * Tabsize		: 4
  * 
- * This Revision: $Id: MyWifi.h 1846 2025-09-26 10:12:45Z  $
+ * This Revision: $Id: SimpleOTA.h 1850 2025-09-26 16:09:10Z  $
  */
 
 /*
@@ -17,13 +17,9 @@
    SPDX-License-Identifier: MPL-2.0
 */
 
-#ifndef _WIFI_H
-#define _WIFI_H
+#ifndef _OTA_H
+#define _OTA_H
 
-extern WiFiClient wifiClient;
+void setupOTA(Print& serialdevice);
 
-int setupWifi( bool allow_reconnect=true );
-bool loopWifi();
-void reportWifi( JsonDocument& doc );
-
-#endif // _WIFI_H
+#endif // _OTA_H

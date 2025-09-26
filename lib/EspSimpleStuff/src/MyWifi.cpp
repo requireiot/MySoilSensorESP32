@@ -4,7 +4,7 @@
  * Created		: 9-Feb-2020
  * Tabsize		: 4
  * 
- * This Revision: $Id: MyWifi.cpp 1847 2025-09-26 12:04:37Z  $
+ * This Revision: $Id: MyWifi.cpp 1850 2025-09-26 16:09:10Z  $
  */
 
 /*
@@ -36,7 +36,7 @@
 #include <esp_wifi.h>
 
 #include "MyWifi.h"
-#include "myauth.h" // defines WIFI_SSID, WIFI_PASSWORD
+//#include "myauth.h" // defines WIFI_SSID, WIFI_PASSWORD
 #include "ansi.h"
 
 //----- types ------------------------------------------------------------------
@@ -60,16 +60,16 @@ struct WifiState {
          ;
    }
 
-   static uint32_t calculateCRC32( const uint8_t *data, size_t length );
-
    bool is_valid() {
-       return crc32 == calculateCRC32( 
+        return crc32 == calculateCRC32( 
             ((uint8_t *)&(this->ip)), sizeof(*this)-sizeof(crc32)
         );
    }
 
    void make_valid() {
-       crc32 = calculateCRC32( ((uint8_t *)&(this->ip)), sizeof(*this)-sizeof(crc32)) ;
+        crc32 = calculateCRC32( 
+            ((uint8_t *)&(this->ip)), sizeof(*this)-sizeof(crc32)
+        );
    }
 };
 
@@ -96,6 +96,9 @@ static uint32_t t_start, t_connected, t_gotIP;
 
 enum connect_t { error=0, autoconnect, reconnect, freshconnect };
 static connect_t connectMode = connect_t::error;       // filled by setupWifi()
+
+static const char* _wifi_SSID;
+static const char* _wifi_PASS;
 
 //----------------------------------------------------------------------------
 
@@ -194,14 +197,14 @@ static void onWiFiEvent(WiFiEvent_t event)
  * 
  * @return  true if connection was successful, else app should try _freshConnect
  */
-static bool _reconnectWifi()
+static bool _reconnectWifi( const char* ssid, const char* pass )
 {
     int wfs;
 
     log_i(IF_NAME " try to re-connect ch=%d, ", wifiState.channel);
     t_start = millis();
     WiFi.config( wifiState.ip, wifiState.gateway, wifiState.subnet, wifiState.dns, wifiState.dns );
-    WiFi.begin( WIFI_SSID, WIFI_PASSWORD, wifiState.channel, wifiState.bssid, true );
+    WiFi.begin( ssid, pass, wifiState.channel, wifiState.bssid, true );
 
     while( (wfs=WiFi.status()) != WL_CONNECTED ) {
     
@@ -229,11 +232,11 @@ static bool _reconnectWifi()
  * @return true  if connection was successful
  * @return false  if not
  */
-static bool _freshConnectWifi()
+static bool _freshConnectWifi( const char* ssid, const char* pass )
 {
-    log_i(IF_NAME " fresh connect to '" ANSI_BOLD "%s" ANSI_RESET "'",WIFI_SSID);
+    log_i(IF_NAME " fresh connect to '" ANSI_BOLD "%s" ANSI_RESET "'",ssid);
     t_start = millis();
-    WiFi.begin( WIFI_SSID, WIFI_PASSWORD );
+    WiFi.begin( ssid, pass );
     uint8_t wf = WiFi.waitForConnectResult(WIFI_TIMEOUT_MS);
     if (wf==WL_CONNECTED) {
         log_i(IF_NAME " " ANSI_GREEN "connected" ANSI_RESET);
@@ -257,8 +260,15 @@ static bool _freshConnectWifi()
  * @return 3  if fresh connection was successful
  * @return 0  if reconnect and fresh connect failed
  */
-int setupWifi( bool allow_reconnect )
+int setupWifi( const char* ssid, const char* pass, bool allow_reconnect )
 {
+	if (ssid==NULL || pass==NULL) {
+		log_e("WiFi: must specify SSID and password");
+		return connect_t::error;
+	}
+	_wifi_SSID = ssid;
+	_wifi_PASS = pass;
+
     connectMode = connect_t::error;
     bool isValid = wifiState.is_valid();
     allow_reconnect = isValid && allow_reconnect && ALLOW_AUTO_RECONNECT;
@@ -281,12 +291,12 @@ int setupWifi( bool allow_reconnect )
             connectMode = connect_t::autoconnect;
         } else if (isValid) {
 //----- 2. if not, then try to re-connect using saved parameters, if available
-            connectMode = _reconnectWifi() ? connect_t::reconnect : connect_t::error;
+            connectMode = _reconnectWifi(ssid,pass) ? connect_t::reconnect : connect_t::error;
         }
     }
     if (connectMode==connect_t::error) {
 //----- 3. if all else has failed, let's try a fresh connection using SSID and password
-        connectMode = _freshConnectWifi() ? connect_t::freshconnect : connect_t::error;
+        connectMode = _freshConnectWifi(ssid,pass) ? connect_t::freshconnect : connect_t::error;
     }
 
     uint32_t t_stop = millis();
@@ -323,7 +333,7 @@ bool loopWifi()
 {
     if (WiFi.status() != WL_CONNECTED) {
         delay(1);
-        setupWifi();
+        setupWifi( _wifi_SSID, _wifi_PASS );
         return true;
     }
     return false;
@@ -354,7 +364,7 @@ static uint32_t _crc32( uint32_t crc, uint8_t by )
  * @param length     length in bytes
  * @return uint32_t  CRC-32 value
  */
-uint32_t WifiState::calculateCRC32(const uint8_t* data, size_t length) 
+uint32_t calculateCRC32(const uint8_t* data, size_t length) 
 {
     uint32_t crc = 0xffffffff;
     while (length--) 

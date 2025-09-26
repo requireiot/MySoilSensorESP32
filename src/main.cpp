@@ -5,7 +5,7 @@
  * Created		: 14-May-2024
  * Tabsize		: 4
  * 
- * This Revision: $Id: main.cpp 1846 2025-09-26 10:12:45Z  $
+ * This Revision: $Id: main.cpp 1860 2025-09-26 20:05:18Z  $
  */
 
 /*
@@ -59,7 +59,7 @@
 
 
 /// version string published at startup.
-const char VERSION[] = "$Id: main.cpp 1846 2025-09-26 10:12:45Z  $ built " __DATE__ " " __TIME__;
+const char VERSION[] = "$Id: main.cpp 1860 2025-09-26 20:05:18Z  $ built " __DATE__ " " __TIME__;
 
 #define DebugSerial Serial1
 
@@ -702,7 +702,7 @@ void setup()
     if (lastCycleFailed)    
         allow_reconnect = false;
 
-    int wifiOk = setupWifi( allow_reconnect );
+    int wifiOk = setupWifi( WIFI_SSID, WIFI_PASSWORD, allow_reconnect );
 
 //----- do MQTT stuff ----------------------------------------------------------
 
