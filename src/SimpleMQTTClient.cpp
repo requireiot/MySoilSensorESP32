@@ -54,6 +54,8 @@
 
 SimpleMqttClient* SimpleMqttClient::_instance = nullptr;
 
+#define TAG ANSI_CYAN "MQTT" ANSI_RESET
+
 /**
  * @brief start with MQTT client, connect to broker and define topics
  * 
@@ -108,13 +110,13 @@ void SimpleMqttClient::subscribeCallback( char* topic, byte* payload, unsigned l
                 subtopic += _instance->_subscribeTopic.length();
                 if (*subtopic=='/') subtopic++;
             } else {
-                log_w("Received message for unknown topic '%s'",topic);
+                log_w(TAG " received message for unknown topic '%s'",topic);
                 return;
             }
         }
-        log_i(
-            "MQTT receive\n  topic='" ANSI_GREEN "%s" ANSI_RESET 
-            "'\n  payload='" ANSI_BLUE "%s" ANSI_RESET "'",
+        log_i( TAG
+            " receive\n  topic='" ANSI_CYAN "%s" ANSI_RESET 
+            "'  message='" ANSI_BLUE "%s" ANSI_RESET "'",
             topic, 
             msg ? msg : "(null)"
         );
@@ -132,9 +134,9 @@ void SimpleMqttClient::subscribeCallback( char* topic, byte* payload, unsigned l
 bool SimpleMqttClient::loop() 
 {
     if (!_psc->connected()) {
-        log_e("Reconnecting to MQTT server, state was %d", _psc->state());
+        log_e(TAG " reconnecting to broker, state was %d", _psc->state());
         if (reconnect()) {
-            log_i("Reconnected to MQTT server");
+            log_i(TAG " reconnected to broker");
             _psc->loop();
         }
         return _psc->connected();
@@ -171,7 +173,7 @@ bool SimpleMqttClient::reconnect()
         || (unsigned long)(t_now - _lastReconnectAttempt) > T_MQTT_RECONNECT
     ) {
         _lastReconnectAttempt = t_now;
-        log_i("Connecting to MQTT broker '" ANSI_BLUE "%s" ANSI_RESET "'"
+        log_i(TAG " connecting to broker '" ANSI_BLUE "%s" ANSI_RESET "'"
             " as '" ANSI_BLUE "%s" ANSI_RESET "'",
             _broker, WiFi.getHostname());
         t_begin = millis();
@@ -180,20 +182,20 @@ bool SimpleMqttClient::reconnect()
                 // successful connection
                 t_end = millis();
                 _t_mqtt_connect = t_end - t_begin;                
-                log_i( ANSI_GREEN "connected" ANSI_RESET " in %u ms",
+                log_i( TAG " " ANSI_GREEN "connected" ANSI_RESET " in %u ms",
                     _t_mqtt_connect );
                 onConnect();
                 if (_subscribeTopic.length()>0) {
                     String subscribeTopic = _subscribeTopic;
                     if (subscribeTopic.endsWith("/")) subscribeTopic += "#";
-                    log_i("Subscribing to '" ANSI_GREEN "%s" ANSI_RESET "'",
+                    log_i(TAG " subscribe to '" ANSI_CYAN "%s" ANSI_RESET "'",
                         subscribeTopic.c_str());
                     _psc->subscribe(subscribeTopic.c_str());
                 }
                 return _psc->connected();            
             } else {
                 int st = _psc->state();
-                log_e(ANSI_RED "failed, rc=%d" ANSI_RESET, st);
+                log_e(TAG " " ANSI_RED "failed, rc=%d" ANSI_RESET, st);
                 delay(MQTT_WAIT_MS);
             }
         }
@@ -220,14 +222,14 @@ void SimpleMqttClient::publish(const char* subtopic,const char* payload, bool re
 	strncat(topic,subtopic,sizeof topic-1);
     reconnect();
 	if (_psc->publish(topic, payload, (boolean)retain)) {
-        log_i(
-            "MQTT publish\n  topic='" ANSI_GREEN "%s" ANSI_RESET 
+        log_i( TAG
+            " publish\n  topic='" ANSI_CYAN "%s" ANSI_RESET 
             "'\n  payload='" ANSI_BLUE "%s" ANSI_RESET "'", 
             topic, 
             payload ? payload : "(null)"
         );
 	} else {
-		log_e("MQTT publish " ANSI_RED "fail !" ANSI_RESET);
+		log_e(TAG " publish " ANSI_RED "fail !" ANSI_RESET);
 	}
     _psc->loop();
 }

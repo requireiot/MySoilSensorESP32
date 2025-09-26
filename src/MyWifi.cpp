@@ -4,7 +4,7 @@
  * Created		: 9-Feb-2020
  * Tabsize		: 4
  * 
- * This Revision: $Id: MyWifi.cpp 1846 2025-09-26 10:12:45Z  $
+ * This Revision: $Id: MyWifi.cpp 1847 2025-09-26 12:04:37Z  $
  */
 
 /*
@@ -86,8 +86,11 @@ const bool ALLOW_AUTO_RECONNECT = true;
 
 //----- local variables --------------------------------------------------------
 
+/// singleton WiFi client, accessible from other modules
 WiFiClient wifiClient;
+/// parameters of last WiFi connection, stored in RTC RAM
 RTC_DATA_ATTR WifiState wifiState;
+/// statistics about how long it takes to connect etc
 static unsigned t_wifi_setup = 0;    // filled by setupWifi()
 static uint32_t t_start, t_connected, t_gotIP;
 
@@ -147,8 +150,10 @@ static void onWiFiEvent(WiFiEvent_t event)
             break;
 
         case ARDUINO_EVENT_WIFI_STA_START:
-            log_i(IF_NAME ": STA start");
-            break;
+            delay(10);
+			log_i(IF_NAME ": STA start, hostname is '" ANSI_BOLD "%s" ANSI_RESET "'",
+	            WiFi.getHostname());
+			break;
 
         case ARDUINO_EVENT_WIFI_STA_CONNECTED:
             t_connected = millis();
@@ -157,7 +162,10 @@ static void onWiFiEvent(WiFiEvent_t event)
 
         case ARDUINO_EVENT_WIFI_STA_GOT_IP:
             t_gotIP = millis();
-            log_i(IF_NAME ": got IP after %u ms", t_gotIP-t_start);
+            log_i(IF_NAME ": got IP " ANSI_BOLD "%s" ANSI_RESET " after %u ms", 
+            	WiFi.localIP().toString().c_str(),
+            	t_gotIP-t_start
+            );
             break;
 
         case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
@@ -181,13 +189,13 @@ static void onWiFiEvent(WiFiEvent_t event)
 //----------------------------------------------------------------------------
 
 /**
- * @brief Try to re-connect to same WiFi AP as before.
+ * @brief Try to re-connect to same WiFi AP as before. This does _not_ check if
+ * the `wifiState` struct is valid, that must be done by the caller.
  * 
  * @return  true if connection was successful, else app should try _freshConnect
  */
 static bool _reconnectWifi()
 {
-    uint32_t t1, t2;
     int wfs;
 
     log_i(IF_NAME " try to re-connect ch=%d, ", wifiState.channel);
@@ -195,28 +203,21 @@ static bool _reconnectWifi()
     WiFi.config( wifiState.ip, wifiState.gateway, wifiState.subnet, wifiState.dns, wifiState.dns );
     WiFi.begin( WIFI_SSID, WIFI_PASSWORD, wifiState.channel, wifiState.bssid, true );
 
-    t1 = millis();
-
     while( (wfs=WiFi.status()) != WL_CONNECTED ) {
     
         if (wfs == WL_CONNECT_FAILED) {
-            log_e( ANSI_BRIGHT_RED ANSI_BOLD "Failed to connect" ANSI_RESET);
+            log_e( ANSI_BRIGHT_RED "Failed to connect" ANSI_RESET);
             return false;
         }
 
         if ((uint32_t)(millis() - t_start) > WIFI_TIMEOUT_MS) {
-            log_e( ANSI_BRIGHT_RED ANSI_BOLD "timeout ERROR  " ANSI_RESET );
+            log_e( ANSI_BRIGHT_RED "timeout ERROR  " ANSI_RESET );
             WiFi.disconnect();
-            yield();
             return false;
         }
 
         delay(50);
-    }
-    
-    t2 = millis();
-    log_i(" wait: %u ms ", (unsigned)(t2-t1));
-
+    }    
     return true;
 }
 
@@ -275,6 +276,7 @@ int setupWifi( bool allow_reconnect )
     if (allow_reconnect) {
 //----- 1. check if Wifi has already been connected in the background
         if (ALLOW_AUTO_CONNECT_ON_START && (WiFi.waitForConnectResult(300) == WL_CONNECTED)) {
+            if (t_connected==0) t_connected = millis();
             log_i("already connected ");
             connectMode = connect_t::autoconnect;
         } else if (isValid) {
